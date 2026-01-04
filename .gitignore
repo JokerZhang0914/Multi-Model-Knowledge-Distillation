@@ -25,3 +25,6 @@ TestResults.xml
 *.jpeg
 *.png
 *.mp4
+# excel files
+*.xlsx
+*.csv
