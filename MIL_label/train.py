@@ -1,3 +1,7 @@
+"""
+/home/zhaokaizhang/.conda/envs/mmked/bin/python /home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/train.py --device 0,1
+"""
+
 import argparse
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -71,7 +75,8 @@ class Optimizer:
         self.best_bag_auc = 0.0
 
         for epoch in range(self.num_epoch):
-
+            print(f"\n[Epoch {epoch+1}/{self.num_epoch}]:")
+            
             loss_teacher = self.optimize_teacher(epoch)
             torch.cuda.empty_cache()  # <--- 清理碎片 
             aucs_teacher = self.evaluate_teacher(epoch)
@@ -86,8 +91,7 @@ class Optimizer:
                 student_test_auc = self.evaluate_student(epoch)
                 torch.cuda.empty_cache()  # <--- 清理碎片
 
-            if (epoch + 1) % 20 == 0:
-                print(f"\n[Epoch {epoch+1}/{self.num_epoch}] Summary:")
+            if (epoch + 1) % 1 == 0:
                 print(f"  > Train Loss (Teacher): {loss_teacher:.4f}")
                 print(f"  > Train Loss (Student): {loss_student:.4f}")
                 print(f"  > Test AUC (Student)  : {auc_student:.4f}")
@@ -498,7 +502,7 @@ def get_parser():
     parser.add_argument('--StuFilterType', default='PseudoBag_85_15_2', type=str,
                         help='Type of using Student Prediction to imporve Teacher '
                              '[ReplaceAS, FilterNegInstance_Top95, FilterNegInstance_ThreProb95, PseudoBag_88_20]')
-    parser.add_argument('--smoothE', default=0, type=int, help='num of epoch to apply StuFilter')
+    parser.add_argument('--smoothE', default=100, type=int, help='num of epoch to apply StuFilter')
     parser.add_argument('--stu_loss_weight_neg', default=1.0, type=float, help='weight of neg instances in stu training')
     parser.add_argument('--stuOptPeriod', default=1, type=int, help='period of stu optimization')
     # parser.add_argument('--TeacherLossWeight', nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0', required=True)
@@ -571,9 +575,9 @@ if __name__ == '__main__':
             print('single GPU model', flush=True)
         else:
             model_encoder = nn.DataParallel(model_encoder, device_ids=list(range(len(args.modeldevice))))
-            model_abmil_teacher_head = nn.DataParallel(model_abmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
-            model_dsmil_teacher_head = nn.DataParallel(model_dsmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
-            optimizer_student_head = nn.DataParallel(optimizer_student_head, device_ids=list(range(len(args.modeldevice))))
+            # model_abmil_teacher_head = nn.DataParallel(model_abmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
+            # model_dsmil_teacher_head = nn.DataParallel(model_dsmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
+            # model_student_head = nn.DataParallel(model_student_head, device_ids=list(range(len(args.modeldevice))))
 
     start_epoch = 0
     if args.resume_mode != 'none':
