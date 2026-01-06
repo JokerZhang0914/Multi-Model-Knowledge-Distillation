@@ -3,7 +3,7 @@ import pandas as pd
 from glob import glob
 from PIL import Image
 
-import tqdm
+from tqdm import tqdm
 import os
 from skimage import io
 
@@ -52,29 +52,29 @@ C. 临床信息 Excel 文件 (clinical_info 读取的文件)
 成功 -> 加入数据集
 
 3. 代码中需要填空的路径
-在使用前，您需要在 dataset_Endo.py 中填入以下路径：
+在使用前，您需要在 dataset_.py 中填入以下路径：
 
 pd.read_csv('这里填标签CSV路径')
 pd.read_excel("这里填临床信息Excel路径")
-glob("这里填包含所有病人文件夹的根目录路径/*") (例如: /data/endo_images/*)
+glob("这里填包含所有病人文件夹的根目录路径/*") (例如: /data/_images/*)
 
 """
 
-def gather_align_EndoImg(root_dir='', split=0.7):
+def gather_align_Img(root_dir='', split=0.7):
     """
     数据准备函数：读取CSV/Excel表格中的标签信息，并与实际文件路径进行匹配对齐。
     最后按比例划分为训练集和测试集。
     """
     raw_label = np.concatenate([
-        np.array(pd.read_csv('')),
-        np.array(pd.read_csv('')),
-        # ...
-    ], axis=1)
-    clinical_info = pd.read_excel("").to_numpy()
+        np.array(pd.read_csv("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/label_zhongliu.csv")),
+        np.array(pd.read_csv("D:/公开数据集/label_gongkai0.csv"))
+    ], axis=0)
+    clinical_info = pd.read_excel("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/path.xlsx").to_numpy()
 
-    endo_patient_fanlin = glob("")
-    endo_patient_all = endo_patient_fanlin
-    endo_patient_all = np.array(endo_patient_all)
+    patient_zhongliu = glob("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu/*")
+    patient_gongkai0 = glob("D:/公开数据集/0_normal_aligned/*")
+    patient_all = patient_zhongliu + patient_gongkai0
+    patient_all = np.array(patient_all)
 
     # match img and label
     clip_label = []
@@ -91,8 +91,9 @@ def gather_align_EndoImg(root_dir='', split=0.7):
 
         find_flag = 0
         patient_dir = 0
-        for patient_i in endo_patient_all:
-            if patient_name == patient_i.split('/')[-1]:
+        for patient_i in patient_all:
+            # if patient_name == patient_i.split('/')[-1]:
+            if patient_name == os.path.basename(patient_i):
                 patient_dir = patient_i
                 find_flag = find_flag + 1
         if find_flag == 0:
@@ -103,6 +104,9 @@ def gather_align_EndoImg(root_dir='', split=0.7):
             sample_image = io.imread(glob(os.path.join(patient_dir, "*.jpg"))[0])
             clip_path.append(patient_dir)
             clip_label.append(raw_label[i])
+
+    print(f"匹配结果: 成功 {len(clip_path)} 例, 未找到 {len(not_found_list)} 例, 重复 {len(overlap_found_list)} 例")
+
     clip_path = np.array(clip_path)
     clip_label = np.array(clip_label)
     clip_data_all = np.concatenate([clip_path[:, None], clip_label], axis=1)
@@ -119,7 +123,7 @@ class DataSet_MIL(torch.utils.data.Dataset):
     def __init__(self, ds, downsample=0.1, transform=None, return_bag=False, preload=False):
         """
         初始化函数
-        :param ds: 数据列表，由 gather_align_EndoImg 返回 (路径+标签)
+        :param ds: 数据列表，由 gather_align_Img 返回 (路径+标签)
         :param downsample: 下采样比例，仅使用部分病人数据进行调试或快速实验
         :param transform: 图像预处理/增强操作
         :param return_bag: True表示返回一个包(整个病人的所有图,用于教师)，False表示返回单张图(用于学生)
@@ -135,8 +139,8 @@ class DataSet_MIL(torch.utils.data.Dataset):
             self.transform = transforms.Compose([
                 transforms.Resize(size=(512, 512)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.31512642, 0.20470396, 0.13602576],
-                                     std=[0.30684662, 0.21589851, 0.15230405])
+                transforms.Normalize(mean=[0.5334944, 0.31880298, 0.2396933],
+                                     std=[0.2623876, 0.2056972, 0.16340312])
             ])
 
         all_slides = ds
@@ -166,7 +170,7 @@ class DataSet_MIL(torch.utils.data.Dataset):
         cnt_patch = 0
         for i in tqdm(all_slides, ascii=True, desc='preload data'):
             patient_path = i[0]
-            for j, file_j in enumerate(glob(os.path.join(patient_path, "*.JPG"))):
+            for j, file_j in enumerate(glob(os.path.join(patient_path, "*.jpg"))):
                 if self.preload:
                     self.all_patches[cnt_patch, :, :, :] = io.imread(file_j)
                 else:
@@ -246,7 +250,7 @@ def cal_img_mean_std():
     """
     计算整个训练集的均值和方差，用于Normalize参数设置。
     """
-    ds_train, ds_test = gather_align_EndoImg()
+    ds_train, ds_test = gather_align_Img()
     train_ds = DataSet_MIL(ds=ds_train, transform=None, return_bag=False)
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=128,
                                                shuffle=False, num_workers=6, drop_last=True, pin_memory=True)
@@ -266,5 +270,80 @@ def cal_img_mean_std():
     print("Std: {}".format(std))
     return mean, std
 
+def test_dataset_integrity():
+    print("\n" + "="*20 + " 开始测试数据集完整性 " + "="*20)
+    
+    # 1. 测试数据搜集与对齐 (gather_align_Img)
+    print("\n[Step 1] 测试路径匹配与数据划分...")
+    try:
+        # 注意：这里会调用您写死的 E:/AAA_joker/... 路径，请确保硬盘上存在这些文件
+        ds_train, ds_test = gather_align_Img(split=0.8) 
+        print(f"  -> 成功! 训练集样本数(Patients): {len(ds_train)}")
+        print(f"  -> 成功! 测试集样本数(Patients): {len(ds_test)}")
+        
+        if len(ds_train) == 0:
+            print("  [Error] 训练集为空！请检查 CSV/Excel 中的 ID 与文件夹名是否匹配。")
+            return
+    except Exception as e:
+        print(f"  [Error] gather_align_Img 运行失败: {e}")
+        return
+
+    # 2. 测试 Instance 模式 (单张图)
+    print("\n[Step 2] 测试 Instance 模式 (Return Single Image)...")
+    try:
+        # 实例化数据集
+        train_ds_instance = DataSet_MIL(ds=ds_train, transform=None, return_bag=False)
+        train_loader_inst = torch.utils.data.DataLoader(train_ds_instance, batch_size=4, shuffle=True)
+        
+        # 获取一个 Batch
+        for i, (imgs, label_info, index) in enumerate(train_loader_inst):
+            patch_label, slide_label, slide_idx, slide_name = label_info
+            
+            print(f"  -> Batch Shape: {imgs.shape} (预期: [4, 3, 512, 512])")
+            print(f"  -> Labels: Patch={patch_label.numpy()}, Slide={slide_label.numpy()}")
+            print(f"  -> Slide Names: {slide_name}")
+            
+            # 简单的数值检查
+            if torch.isnan(imgs).any():
+                print("  [Warning] 图像中发现 NaN 值!")
+            break # 只测一个 batch
+    except Exception as e:
+        print(f"  [Error] Instance 模式测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # 3. 测试 Bag 模式 (MIL 多示例学习)
+    print("\n[Step 3] 测试 Bag 模式 (Return Whole Patient Bag)...")
+    try:
+        # 实例化数据集 (return_bag=True)
+        train_ds_bag = DataSet_MIL(ds=ds_train, transform=None, return_bag=True)
+        # 注意：Bag模式下 batch_size 必须为 1，因为每个病人的图片数量不一样，无法堆叠成 Tensor
+        train_loader_bag = torch.utils.data.DataLoader(train_ds_bag, batch_size=1, shuffle=True)
+        
+        for i, (bag, label_info, index) in enumerate(train_loader_bag):
+            # bag shape: [1, N_patches, 3, 512, 512]
+            # label_info 是 list，里面每个元素也是 batch 维度的 (size 1)
+            
+            patch_labels = label_info[0] # [1, N_patches]
+            slide_label = label_info[1]  # [1]
+            slide_name = label_info[3]   # tuple of size 1
+            
+            print(f"  -> Bag Shape: {bag.shape} (预期: [1, N, 3, 512, 512])")
+            print(f"  -> Patient: {slide_name[0]}")
+            print(f"  -> Slide Label: {slide_label.item()}")
+            print(f"  -> Num Patches in this bag: {bag.shape[1]}")
+            
+            break # 只测一个 bag
+            
+    except Exception as e:
+        print(f"  [Error] Bag 模式测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("\n" + "="*20 + " 测试结束 " + "="*20)
+
 if __name__ == '__main__':
-    mean, std = cal_img_mean_std()
+    # print("...正在计算 Mean 和 Std...")
+    # cal_img_mean_std()
+
+    test_dataset_integrity()

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+import torchvision.models as models
 
 import math
 
@@ -514,6 +515,14 @@ class Instance_Classifier_Head(nn.Module):
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
 
+class PretrainedResNet18_Encoder(nn.Module):
+    def __init__(self):
+        super(PretrainedResNet18_Encoder, self).__init__()
+        model_raw = models.resnet18(pretrained=True)
+        self.pretrained_model = nn.Sequential(*list(model_raw.children())[:-1])
+
+    def forward(self, x):
+        return self.pretrained_model(x).squeeze(-1).squeeze(-1)
 
 def teacher_Attention_head(bn=True, num_classes=[2], init=True, input_feat_dim=512):
     model = Bag_Classifier_Attention_Head(num_classes=num_classes, init=init, input_feat_dim=input_feat_dim)

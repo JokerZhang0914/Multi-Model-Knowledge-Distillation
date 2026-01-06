@@ -1,5 +1,8 @@
 import argparse
+import os
 import numpy as np
+import pandas as pd
+import copy
 
 import torch
 import torch.optim
@@ -7,8 +10,15 @@ import torch.nn as nn
 import torch.utils.data
 
 from tqdm import tqdm
+import datetime
+from tensorboardX import SummaryWriter
 
 import utils
+
+from dataset import DataSet_MIL, gather_align_Img
+from model_head import PretrainedResNet18_Encoder, teacher_Attention_head, teacher_DSMIL_head, student_head
+from model_head import map_abmil, map_dsmil, map_student
+
 
 class Optimizer:
     def __init__(self, model_encoder, model_teacherHead, model_studentHead,
@@ -42,20 +52,72 @@ class Optimizer:
         self.num_teacher = len(model_teacherHead)
         self.teacher_loss_weight = teacher_loss_weight
         self.teacher_pseudo_label_merge_weight = teacher_pseudo_label_merge_weight
+        self.best_bag_auc = 0.0
+        self.save_dir = None # 将在 optimize 中赋值或通过参数传入
 
-    def optimize(self):
+
+    def optimize(self, save_path_root):
         self.Bank_all_Bags_label = None
         self.Bank_all_instances_pred_byTeacher = None
         self.Bank_all_instances_feat_byTeacher = None
         self.Bank_all_instances_pred_processed = None
         self.Bank_all_instances_pred_byStudent = None
 
+        if not os.path.exists(save_path_root):
+            os.makedirs(save_path_root)
+
+        self.best_bag_auc = 0.0
+
         for epoch in range(self.num_epoch):
-            self.optimize_teacher(epoch)
-            self.evaluate_teacher(epoch)
+            loss_teacher = self.optimize_teacher(epoch)
+            aucs_teacher = self.evaluate_teacher(epoch)
+
+            loss_student = 0.0 # 默认为 0，如果本 Epoch 不训练 Student
+            auc_student = 0.0
+
             if epoch % self.stuOptPeriod == 0:
-                self.optimize_student(epoch)
-                self.evaluate_student(epoch)
+                loss_student = self.optimize_student(epoch)
+                student_test_auc = self.evaluate_student(epoch)
+
+            if (epoch + 1) % 20 == 0:
+                print(f"\n[Epoch {epoch+1}/{self.num_epoch}] Summary:")
+                print(f"  > Train Loss (Teacher): {loss_teacher:.4f}")
+                print(f"  > Train Loss (Student): {loss_student:.4f}")
+                print(f"  > Test AUC (Student)  : {auc_student:.4f}")
+                for idx, auc_t in enumerate(aucs_teacher):
+                    print(f"  > Test AUC (Teacher {idx}): {auc_t:.4f}")
+                print("-" * 30)
+            
+            if save_path_root and epoch % self.stuOptPeriod == 0:
+                # 1. 准备要保存的状态字典 (包含所有模型和优化器)
+                checkpoint = {
+                    'epoch': epoch,
+                    'best_bag_auc': self.best_bag_auc,
+                    'model_encoder': self.model_encoder.state_dict(),
+                    'model_studentHead': self.model_studentHead.state_dict(),
+                    'optimizer_encoder': self.optimizer_encoder.state_dict(),
+                    'optimizer_studentHead': self.optimizer_studentHead.state_dict(),
+                    # 保存 Teacher 列表 (假设有两个 Teacher)
+                    'model_teacherHead_0': self.model_teacherHead[0].state_dict(),
+                    'model_teacherHead_1': self.model_teacherHead[1].state_dict(),
+                    'optimizer_teacherHead_0': self.optimizer_teacherHead[0].state_dict(),
+                    'optimizer_teacherHead_1': self.optimizer_teacherHead[1].state_dict(),
+                }
+
+                # 2. 保存 Latest (最新) 权重
+                torch.save(checkpoint, os.path.join(save_path_root, 'checkpoint_latest.pth'))
+
+                # 3. 保存 Best (最佳) 权重 (基于 Student Bag AUC)
+                # 注意：你需要确保 evaluate_student 能够返回 auc，或者从 tensorboard 记录中获取
+                # 这里假设 evaluate_student 返回了当前的 auc，你需要微调 evaluate_student 让它 return auc
+                # 如果不想改 evaluate_student，可以在 optimize_student 里把计算出的 bag_auc_ByStudent 存到 self.current_auc
+                
+                # 假设你已经把 student 的 AUC 存到了 self.current_student_auc
+                if hasattr(self, 'current_student_auc') and self.current_student_auc > self.best_bag_auc:
+                    self.best_bag_auc = self.current_student_auc
+                    torch.save(checkpoint, os.path.join(save_path_root, 'checkpoint_best.pth'))
+                    print(f"Epoch {epoch}: New Best AUC {self.best_bag_auc:.4f} Saved!")
+        
         return 0
     
     def optimize_teacher(self, epoch):
@@ -77,6 +139,8 @@ class Optimizer:
         patch_label_pred = [[] for i in range(self.num_teacher)]
         bag_label_pred = [[] for i in range(self.num_teacher)]
         patch_corresponding_bag_label = []
+
+        epoch_loss_sum = 0.0
 
         for iter, (data, label, selected) in enumerate(tqdm(loader, desc='Teacher training')):
             # 移动标签到 GPU
@@ -122,6 +186,10 @@ class Optimizer:
                 for optimizer_teacherHead_i in self.optimizer_teacherHead:
                     optimizer_teacherHead_i.zero_grad()
                 loss_teacher.backward()
+
+                if isinstance(loss_teacher, torch.Tensor):
+                    epoch_loss_sum += loss_teacher.item()
+
                 self.optimizer_encoder.step()
                 for optimizer_teacherHead_i in self.optimizer_teacherHead:
                     optimizer_teacherHead_i.step()
@@ -159,8 +227,9 @@ class Optimizer:
             self.writer.add_scalar('train_bag_AUC_byTeacher{}'.format(i), bag_auc_ByTeacher, epoch)
 
         # print("Epoch:{} train_bag_AUC_byTeacher:{}".format(epoch, bag_auc_ByTeacher))
+        epoch_avg_loss = epoch_loss_sum / len(loader)
 
-        return 0
+        return epoch_avg_loss
     
     
     def optimize_student(self, epoch):
@@ -184,6 +253,8 @@ class Optimizer:
         bag_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
         patch_corresponding_slide_idx = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
 
+        epoch_loss_sum = 0.0
+        
         for iter, (data, label, selected) in enumerate(tqdm(loader, desc="Student Training")):
             for i, j in enumerate(label):
                 if torch.is_tensor(j):
@@ -231,6 +302,8 @@ class Optimizer:
 
             loss_student.backward()
 
+            epoch_loss_sum += loss_student.item()
+
             self.optimizer_encoder.step()
             self.optimizer_studentHead.step()
 
@@ -266,7 +339,8 @@ class Optimizer:
         bag_auc_ByStudent = utils.cal_auc(bag_label_gt_coarse.reshape(-1), bag_label_prediction.reshape(-1))
         self.writer.add_scalar('train_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
 
-        return 0
+        epoch_avg_loss = epoch_loss_sum / len(loader)
+        return epoch_avg_loss
 
     def evaluate_teacher(self, epoch):
         """评估 Teacher 的性能"""
@@ -311,13 +385,16 @@ class Optimizer:
         patch_label_gt = torch.cat(patch_label_gt)
         bag_label_gt = torch.cat(bag_label_gt)
 
+        teacher_aucs = []
         for i in range(self.num_teacher):
             patch_label_pred_normed = (patch_label_pred[i] - patch_label_pred[i].min()) / (patch_label_pred[i].max() - patch_label_pred[i].min())
             # 计算 Bag AUC
             bag_auc_ByTeacher_withAttnScore = utils.cal_auc(bag_label_gt.reshape(-1), bag_label_prediction_withAttnScore[i].reshape(-1))
             # 记录到 TensorBoard
             self.writer.add_scalar('test_bag_AUC_byTeacher{}'.format(i), bag_auc_ByTeacher_withAttnScore, epoch)
-        return 0
+
+            teacher_aucs.append(bag_auc_ByTeacher_withAttnScore)
+        return teacher_aucs
     
 
     def evaluate_student(self, epoch):
@@ -375,7 +452,7 @@ class Optimizer:
         bag_auc_ByStudent = utils.cal_auc(bag_label_gt_coarse.reshape(-1), bag_label_prediction.reshape(-1))
         self.writer.add_scalar('test_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
 
-        return 0
+        return bag_auc_ByStudent
 
     def norm_AttnScore2Prob(self, attn_score, idx_teacher):
         """辅助函数：将 Teacher 的 Raw Attention Score 归一化为 0-1 的概率值"""
@@ -422,15 +499,101 @@ def get_parser():
     parser.add_argument('--smoothE', default=0, type=int, help='num of epoch to apply StuFilter')
     parser.add_argument('--stu_loss_weight_neg', default=1.0, type=float, help='weight of neg instances in stu training')
     parser.add_argument('--stuOptPeriod', default=1, type=int, help='period of stu optimization')
-    parser.add_argument('--TeacherLossWeight', nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0', required=True)
-    parser.add_argument('--PLMergeWeight', nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5', required=True)
+    # parser.add_argument('--TeacherLossWeight', nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0', required=True)
+    # parser.add_argument('--PLMergeWeight', nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5', required=True)
+    parser.add_argument('--teacher_loss_weight', default=[1.0, 1.0], nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0')
+    parser.add_argument('--PLMergeWeight', default=[0.5, 0.5], nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5')
+    parser.add_argument('--save_dir', default='./checkpoints', type=str, help='Directory to save checkpoints')
+    parser.add_argument('--resume_mode', default='none', choices=['none', 'best', 'latest'], 
+                        help='Resume training from: "none" (start fresh), "best" (best AUC), or "latest" (last epoch)')
+    parser.add_argument('--resume_path', default='', type=str, 
+                        help='Path to the folder containing checkpoints (required if resume_mode is not none)')
     return parser.parse_args()
 
 if __name__ == '__main__':
     args = get_parser()
     
+    name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")+"_%s" % args.comment.replace('/', '_') + \
+           "_Seed{}_Bs{}_lr{}_Downsample{}_PLPostProcessBy{}_StuFilterType{}_smoothE{}_weightN{}_StuOptP{}_TeacherLossW{}_MergeW{}".format(
+               args.seed, args.batch_size, args.lr, args.dataset_downsampling,
+               args.PLPostProcessMethod, args.StuFilterType, args.smoothE, args.stu_loss_weight_neg, args.stuOptPeriod,
+               str(args.teacher_loss_weight), str(args.PLMergeWeight),
+           )
+
     try:
         args.device = [int(item) for item in args.device.split(',')]
     except AttributeError:
         args.device = [int(args.device)]
     args.modeldevice = args.device
+
+    utils.setup_runtime(seed=42, cuda_dev_id=list(np.unique(args.modeldevice + args.device)))
+    print(name)
+
+    writer = SummaryWriter('./runs_mil_label/%s'%name)
+    writer.add_text('args', " \n".join(['%s %s' % (arg, getattr(args, arg)) for arg in vars(args)]))
+
+    # model
+    cuda_num = 0
+    device = torch.device(f'cuda:{cuda_num}' if torch.cuda.is_available() else 'cpu')
+
+    # model
+    model_encoder = PretrainedResNet18_Encoder().to(device)
+    model_abmil_teacher_head = map_abmil(teacher_Attention_head(input_feat_dim=512)).to(device)
+    model_dsmil_teacher_head = map_dsmil(teacher_DSMIL_head(input_feat_dim=512)).to(device)
+    model_student_head = map_student(student_head(input_feat_dim=512)).to(device)
+
+    optimizer_encoder = torch.optim.SGD(model_encoder.parameters(), lr=args.lr)
+    optimizer_abmil_teacher_head = torch.optim.SGD(model_abmil_teacher_head.parameters(), lr=args.lr)
+    optimizer_dsmil_teacher_head = torch.optim.SGD(model_dsmil_teacher_head.parameters(), lr=args.lr)
+    optimizer_student_head = torch.optim.SGD(model_student_head.parameters(), lr=args.lr)
+
+    ds_train, ds_test = gather_align_Img()
+
+    train_ds_return_instance = DataSet_MIL(ds=ds_train, downsample=args.dataset_downsampling, transform=None, preload=False, return_bag=False)
+    train_ds_return_bag = copy.deepcopy(train_ds_return_instance)
+    train_ds_return_bag.return_bag = True
+    val_ds_return_instance = DataSet_MIL(ds=ds_test, downsample=args.dataset_downsampling, transform=None, preload=False, return_bag=False)
+    val_ds_return_bag = DataSet_MIL(ds=ds_test, downsample=args.dataset_downsampling, transform=None, preload=False, return_bag=True)
+
+    train_loader_instance = torch.utils.data.DataLoader(train_ds_return_instance, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, drop_last=False)
+    train_loader_bag = torch.utils.data.DataLoader(train_ds_return_bag, batch_size=1, shuffle=True, num_workers=args.workers, drop_last=False)
+    val_loader_instance = torch.utils.data.DataLoader(val_ds_return_instance, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, drop_last=False)
+    val_loader_bag = torch.utils.data.DataLoader(val_ds_return_bag, batch_size=1, shuffle=False, num_workers=args.workers, drop_last=False)
+
+    print("[Data] {} training samples".format(len(train_loader_instance.dataset)))
+    print("[Data] {} evaluating samples".format(len(val_loader_instance.dataset)))
+
+    if torch.cuda.device_count() > 1:
+        print("Let's use", len(args.modeldevice), "GPUs for the model")
+        if len(args.modeldevice) == 1:
+            print('single GPU model', flush=True)
+        else:
+            model_encoder = nn.DataParallel(model_encoder, device_ids=list(range(len(args.modeldevice))))
+            model_abmil_teacher_head = nn.DataParallel(model_abmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
+            model_dsmil_teacher_head = nn.DataParallel(model_dsmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
+            optimizer_student_head = nn.DataParallel(optimizer_student_head, device_ids=list(range(len(args.modeldevice))))
+
+    optimizer = Optimizer(model_encoder=model_encoder, 
+                          model_teacherHead=[model_abmil_teacher_head, model_dsmil_teacher_head],
+                          model_studentHead=model_student_head,
+                          optimizer_encoder=optimizer_encoder,
+                          optimizer_teacherHead=[optimizer_abmil_teacher_head, optimizer_dsmil_teacher_head],
+                          optimizer_studentHead=optimizer_student_head,
+                          train_bagloader=train_loader_bag,
+                          train_instanceloader=train_loader_instance,
+                          test_bagloader=val_loader_bag,
+                          test_instanceloader=val_loader_instance,
+                          writer=writer,
+                          num_epoch=args.epochs,
+                          dev=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                          PLPostProcessMethod=args.PLPostProcessMethod,
+                          StuFilterType=args.StuFilterType,
+                          stu_loss_weight_neg=args.stu_loss_weight_neg,
+                          stuOptPeriod=args.stuOptPeriod,
+                          teacher_loss_weight=args.teacher_loss_weight,
+                          teacher_pseudo_label_merge_weight=args.PLMergeWeight,
+                          smoothE=args.smoothE
+
+    )
+
+    optimizer.optimize()

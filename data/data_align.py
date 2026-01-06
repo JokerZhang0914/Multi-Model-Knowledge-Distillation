@@ -423,7 +423,7 @@ if __name__ == "__main__":
     )
     """
 
-    input_excel_path = r"E:\AAA_joker\本科毕设\code\data\数据整理_内镜肠镜病理（2020年）_厦门.xlsx"
+    input_excel_path = r"E:\AAA_joker\本科毕设\code\Multi-Model-Knowledge-Distillation\data\数据整理_内镜肠镜病理（2020年）_厦门.xlsx"
     
     # 输出图片根目录
     output_aligned_dir = r"H:\中山医院_aligned"

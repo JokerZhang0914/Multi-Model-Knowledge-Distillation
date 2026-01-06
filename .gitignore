@@ -20,11 +20,24 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+
 # video and pictures
 *.jpg
 *.jpeg
 *.png
 *.mp4
+
 # excel files
 *.xlsx
 *.csv
+# =========================
+# Python 缓存文件
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+
+# =========================
+# 运行与实验输出目录（如 TensorBoard / PyTorch）
+# =========================
+runs_mil_label/
