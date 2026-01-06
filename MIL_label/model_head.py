@@ -626,7 +626,7 @@ class map_student(nn.Module):
         # prediction[:, 0] 是预测为 label=0 的概率
         # prediction[:, 1] 是预测为 label=1 的概率
         loss = -1. * torch.mean(
-            self.neg_weight * (1 - target) * torch.log(prediction[:, 0] + 1e-5) + 
+            neg_weight * (1 - target) * torch.log(prediction[:, 0] + 1e-5) + 
             (1 - neg_weight) * target * torch.log(prediction[:, 1] + 1e-5)
         )
         return loss

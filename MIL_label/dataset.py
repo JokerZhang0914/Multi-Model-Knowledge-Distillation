@@ -65,14 +65,24 @@ def gather_align_Img(root_dir='', split=0.7):
     数据准备函数：读取CSV/Excel表格中的标签信息，并与实际文件路径进行匹配对齐。
     最后按比例划分为训练集和测试集。
     """
-    raw_label = np.concatenate([
-        np.array(pd.read_csv("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/label_zhongliu.csv")),
-        np.array(pd.read_csv("D:/公开数据集/label_gongkai0.csv"))
-    ], axis=0)
-    clinical_info = pd.read_excel("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/path.xlsx").to_numpy()
+    data_path = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data'
 
-    patient_zhongliu = glob("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu/*")
-    patient_gongkai0 = glob("D:/公开数据集/0_normal_aligned/*")
+    # raw_label = np.concatenate([
+    #     np.array(pd.read_csv("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/label_zhongliu.csv")),
+    #     np.array(pd.read_csv("D:/公开数据集/label_gongkai0.csv"))
+    # ], axis=0)
+    raw_label = np.concatenate([
+        np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
+        np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai0.csv'))
+    ], axis=0)
+    
+    # clinical_info = pd.read_excel("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/path.xlsx").to_numpy()
+    clinical_info = pd.read_excel(data_path + '/path.xlsx').to_numpy()
+
+    # patient_zhongliu = glob("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu/*")
+    # patient_gongkai0 = glob("D:/公开数据集/0_normal_aligned/*")
+    patient_zhongliu = glob(data_path + '/肿瘤医院_1/dataset_aligned_zhongliu/*')
+    patient_gongkai0 = glob(data_path + '/公开数据集/0_normal_aligned/*')
     patient_all = patient_zhongliu + patient_gongkai0
     patient_all = np.array(patient_all)
 
@@ -205,8 +215,8 @@ class DataSet_MIL(torch.utils.data.Dataset):
             idx_patch_from_slide_i = np.where(self.patch_corresponding_slide_index==index)[0]
 
             # 硬编码限制：每个Bag最多取100张图
-            if len(idx_patch_from_slide_i) > 100:
-                idx_patch_from_slide_i = idx_patch_from_slide_i[:100]
+            if len(idx_patch_from_slide_i) > 64:
+                idx_patch_from_slide_i = idx_patch_from_slide_i[:64]
 
             bag = self.all_patches[idx_patch_from_slide_i]
             bag_normed = np.zeros([bag.shape[0], 3, 512, 512], dtype=np.float32)

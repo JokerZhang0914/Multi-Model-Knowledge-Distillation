@@ -1,5 +1,6 @@
 import argparse
 import os
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import numpy as np
 import pandas as pd
 import copy
@@ -54,6 +55,7 @@ class Optimizer:
         self.teacher_pseudo_label_merge_weight = teacher_pseudo_label_merge_weight
         self.best_bag_auc = 0.0
         self.save_dir = None # 将在 optimize 中赋值或通过参数传入
+        self.scaler = torch.amp.GradScaler('cuda')
 
 
     def optimize(self, save_path_root):
@@ -69,15 +71,20 @@ class Optimizer:
         self.best_bag_auc = 0.0
 
         for epoch in range(self.num_epoch):
+
             loss_teacher = self.optimize_teacher(epoch)
+            torch.cuda.empty_cache()  # <--- 清理碎片 
             aucs_teacher = self.evaluate_teacher(epoch)
+            torch.cuda.empty_cache()  # <--- 清理碎片
 
             loss_student = 0.0 # 默认为 0，如果本 Epoch 不训练 Student
             auc_student = 0.0
 
             if epoch % self.stuOptPeriod == 0:
                 loss_student = self.optimize_student(epoch)
+                torch.cuda.empty_cache()  # <--- 清理碎片
                 student_test_auc = self.evaluate_student(epoch)
+                torch.cuda.empty_cache()  # <--- 清理碎片
 
             if (epoch + 1) % 20 == 0:
                 print(f"\n[Epoch {epoch+1}/{self.num_epoch}] Summary:")
@@ -108,11 +115,6 @@ class Optimizer:
                 torch.save(checkpoint, os.path.join(save_path_root, 'checkpoint_latest.pth'))
 
                 # 3. 保存 Best (最佳) 权重 (基于 Student Bag AUC)
-                # 注意：你需要确保 evaluate_student 能够返回 auc，或者从 tensorboard 记录中获取
-                # 这里假设 evaluate_student 返回了当前的 auc，你需要微调 evaluate_student 让它 return auc
-                # 如果不想改 evaluate_student，可以在 optimize_student 里把计算出的 bag_auc_ByStudent 存到 self.current_auc
-                
-                # 假设你已经把 student 的 AUC 存到了 self.current_student_auc
                 if hasattr(self, 'current_student_auc') and self.current_student_auc > self.best_bag_auc:
                     self.best_bag_auc = self.current_student_auc
                     torch.save(checkpoint, os.path.join(save_path_root, 'checkpoint_best.pth'))
@@ -268,7 +270,7 @@ class Optimizer:
             # 提取特征
             feat = self.model_encoder(data)
             # 生成伪标签
-            pseudo_instance_label = torch.zeros_like(label[0])
+            pseudo_instance_label = torch.zeros_like(label[0]).float()
             with torch.no_grad():
                 for i in range(self.num_teacher):
                     _, instance_attn_score = self.model_teacherHead[i](feat)
@@ -464,7 +466,7 @@ def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Implementation of Self-Label')
     # optimizer
     parser.add_argument('--epochs', default=1000, type=int, help='number of epochs')
-    parser.add_argument('--batch_size', default=128, type=int, help='batch size (default: 256)')
+    parser.add_argument('--batch_size', default=64, type=int, help='batch size (default: 256)')
     parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate (default: 0.05)')
     parser.add_argument('--lrdrop', default=1000, type=int, help='multiply LR by 0.5 every (default: 150 epochs)')
     parser.add_argument('--wd', default=-5, type=float, help='weight decay pow (default: (-5)')
@@ -488,7 +490,7 @@ def get_parser():
     parser.add_argument('--log_iter', default=200, type=int, help='log every x-th batch (default: 200)')
     parser.add_argument('--seed', default=10, type=int, help='random seed')
 
-    parser.add_argument('--dataset_downsampling', default=0.1, type=float, help='sampling the dataset for Debug')
+    parser.add_argument('--dataset_downsampling', default=0.02, type=float, help='sampling the dataset for Debug')
 
     parser.add_argument('--PLPostProcessMethod', default='NegGuide', type=str,
                         help='Post-processing method of Attention Scores to build Pseudo Lables',
@@ -573,6 +575,38 @@ if __name__ == '__main__':
             model_dsmil_teacher_head = nn.DataParallel(model_dsmil_teacher_head, device_ids=list(range(len(args.modeldevice))))
             optimizer_student_head = nn.DataParallel(optimizer_student_head, device_ids=list(range(len(args.modeldevice))))
 
+    start_epoch = 0
+    if args.resume_mode != 'none':
+        if not args.resume_path or not os.path.exists(args.resume_path):
+            print(f"[Warning] Resume path '{args.resume_path}' does not exist! Starting from scratch.")
+        else:
+            # 确定文件名
+            ckpt_name = f'checkpoint_{args.resume_mode}.pth' # checkpoint_best.pth 或 checkpoint_latest.pth
+            ckpt_full_path = os.path.join(args.resume_path, ckpt_name)
+            
+            if os.path.exists(ckpt_full_path):
+                print(f"Loading {args.resume_mode} checkpoint from {ckpt_full_path}...")
+                checkpoint = torch.load(ckpt_full_path, map_location=f'cuda:{args.device[0]}')
+                
+                # 加载模型参数
+                model_encoder.load_state_dict(checkpoint['model_encoder'])
+                model_student_head.load_state_dict(checkpoint['model_studentHead'])
+                # 如果使用了 DataParallel，加载时可能需要注意 key 是否包含 'module.'
+                
+                model_abmil_teacher_head[0].load_state_dict(checkpoint['model_teacherHead_0'])
+                model_dsmil_teacher_head[1].load_state_dict(checkpoint['model_teacherHead_1'])
+                
+                # 加载优化器参数 (如果是 latest 模式，通常需要恢复优化器状态)
+                if args.resume_mode == 'latest':
+                    optimizer_encoder.load_state_dict(checkpoint['optimizer_encoder'])
+                    optimizer_student_head.load_state_dict(checkpoint['optimizer_studentHead'])
+                    start_epoch = checkpoint['epoch'] + 1
+                    print(f"Resuming form Epoch {start_epoch}")
+                else:
+                    print("Loaded Best weights. Starting fine-tuning/inference.")
+            else:
+                print(f"[Error] Checkpoint file {ckpt_full_path} not found!")
+
     optimizer = Optimizer(model_encoder=model_encoder, 
                           model_teacherHead=[model_abmil_teacher_head, model_dsmil_teacher_head],
                           model_studentHead=model_student_head,
@@ -596,4 +630,5 @@ if __name__ == '__main__':
 
     )
 
-    optimizer.optimize()
+    save_path = os.path.join(args.save_dir, name)
+    optimizer.optimize(save_path_root=save_path)
