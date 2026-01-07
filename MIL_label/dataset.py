@@ -72,7 +72,7 @@ def gather_align_Img(root_dir='', split=0.7):
     #     np.array(pd.read_csv("D:/公开数据集/label_gongkai0.csv"))
     # ], axis=0)
     raw_label = np.concatenate([
-        #np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
+        # np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
         np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai0.csv')),
         np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai1.csv'))
     ], axis=0)

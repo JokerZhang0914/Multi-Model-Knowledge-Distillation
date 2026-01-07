@@ -271,83 +271,138 @@ class ResNet_512x512_Encoder(nn.Module):
         return feat
     
 
-class Bag_Classifier_Attention_Head(nn.Module):
-    def __init__(self, num_classes, init=True, withoutAtten=False, input_feat_dim=512):
-        super(Bag_Classifier_Attention_Head, self).__init__()
-        self.withoutAtten=withoutAtten
-        # 1. 特征变换层：将 Backbone 输出的特征映射到注意力层的输入维度
-        self.classifier = nn.Sequential(nn.Dropout(0.5),
-                            nn.Linear(input_feat_dim, 1024),
-                            nn.BatchNorm1d(1024),
-                            nn.ReLU(inplace=True),
-                            nn.Dropout(0.5),
-                            nn.Linear(1024, 1024),
-                            nn.BatchNorm1d(1024),
-                            nn.ReLU(inplace=True))
+# class Bag_Classifier_Attention_Head(nn.Module):
+#     def __init__(self, num_classes, init=True, withoutAtten=False, input_feat_dim=512):
+#         super(Bag_Classifier_Attention_Head, self).__init__()
+#         self.withoutAtten=withoutAtten
+#         # 1. 特征变换层：将 Backbone 输出的特征映射到注意力层的输入维度
+#         self.classifier = nn.Sequential(nn.Dropout(0.5),
+#                             nn.Linear(input_feat_dim, 1024),
+#                             nn.BatchNorm1d(1024),
+#                             nn.ReLU(inplace=True),
+#                             nn.Dropout(0.5),
+#                             nn.Linear(1024, 1024),
+#                             nn.BatchNorm1d(1024),
+#                             nn.ReLU(inplace=True))
         
-        self.L = 1024 # 注意力层输入维度
-        self.D = 512  # 注意力层内部维度
-        self.K = 1    # 注意力分数维度 (通常为1)
+#         self.L = 1024 # 注意力层输入维度
+#         self.D = 512  # 注意力层内部维度
+#         self.K = 1    # 注意力分数维度 (通常为1)
 
-        # 2. 注意力机制网络 
+#         # 2. 注意力机制网络 
+#         self.attention = nn.Sequential(
+#             nn.Linear(self.L, self.D),
+#             nn.Tanh(),
+#             nn.Linear(self.D, self.K)
+#         )
+#         self.headcount = len(num_classes)
+#         self.return_features = False
+#         # 3. 最终分类层：将聚合后的特征映射到类别 
+#         self.top_layer = nn.Linear(1024, num_classes[0])
+#         if init:
+#             self._initialize_weights()
+
+#     def forward(self, x, returnBeforeSoftMaxA=False, scores_replaceAS=None):
+#         x = self.classifier(x)
+
+#         # Attention module
+#         A_ = self.attention(x)  # 计算每个 Instance 的未归一化分数 -> NxK
+#         A_ = torch.transpose(A_, 1, 0)  # -> KxN
+#         A = F.softmax(A_, dim=1)  # 对 N 维度进行 Softmax，得到归一化的注意力分数 -> KxN
+
+#         # 允许外部传入分数替换内部计算 (用于调试或特殊推理)
+#         if scores_replaceAS is not None:
+#             A_ = scores_replaceAS
+#             A = F.softmax(A_, dim=1)  # softmax over N
+
+#         if self.withoutAtten:
+#             x = torch.mean(x, dim=0, keepdim=True)
+#         else:
+#             # 使用注意力分数对 Instance 特征进行加权求和 (矩阵乘法)
+#             # A (1xN) * x (Nx1024) -> (1x1024)
+#             x = torch.mm(A, x)  # 得到 Bag Representation,KxL
+
+#         if self.return_features: # switch only used for CIFAR-experiments
+#             return x
+
+#         x = self.top_layer(x)
+#         # 返回: 
+#         # x: Bag 的预测 Logits
+#         # 0: 占位符
+#         # A: 注意力分数 (Teacher 给 Student 的重要指导信息)
+#         if returnBeforeSoftMaxA:
+#             return x, torch.zeros_like(x), A, A_.squeeze(0)
+#         return x, 0, A
+
+#     def _initialize_weights(self):
+#         for y, m in enumerate(self.modules()):
+#             if isinstance(m, nn.Conv2d):
+#                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+#                 for i in range(m.out_channels):
+#                     m.weight.data[i].normal_(0, math.sqrt(2. / n))
+#                 if m.bias is not None:
+#                     m.bias.data.zero_()
+#             elif isinstance(m, nn.BatchNorm2d):
+#                 m.weight.data.fill_(1)
+#                 m.bias.data.zero_()
+#             elif isinstance(m, nn.Linear):
+#                 m.weight.data.normal_(0, 0.01)
+#                 m.bias.data.zero_()
+class Bag_Classifier_Attention_Head(nn.Module):
+    def __init__(self, features=None, num_classes=[2], init=True, input_feat_dim=512):
+        super(Bag_Classifier_Attention_Head, self).__init__()
+        self.features = features
+        self.num_classes = num_classes[0]
+        self.L = input_feat_dim  # 输入特征维度
+        self.D = 128  # 注意力网络隐藏层维度
+        self.K = 1    # 注意力头数
+        
         self.attention = nn.Sequential(
             nn.Linear(self.L, self.D),
             nn.Tanh(),
             nn.Linear(self.D, self.K)
         )
-        self.headcount = len(num_classes)
-        self.return_features = False
-        # 3. 最终分类层：将聚合后的特征映射到类别 
-        self.top_layer = nn.Linear(1024, num_classes[0])
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(self.L * self.K, self.num_classes)
+        )
+        
         if init:
             self._initialize_weights()
 
-    def forward(self, x, returnBeforeSoftMaxA=False, scores_replaceAS=None):
-        x = self.classifier(x)
-
-        # Attention module
-        A_ = self.attention(x)  # 计算每个 Instance 的未归一化分数 -> NxK
-        A_ = torch.transpose(A_, 1, 0)  # -> KxN
-        A = F.softmax(A_, dim=1)  # 对 N 维度进行 Softmax，得到归一化的注意力分数 -> KxN
-
-        # 允许外部传入分数替换内部计算 (用于调试或特殊推理)
-        if scores_replaceAS is not None:
-            A_ = scores_replaceAS
-            A = F.softmax(A_, dim=1)  # softmax over N
-
-        if self.withoutAtten:
-            x = torch.mean(x, dim=0, keepdim=True)
-        else:
-            # 使用注意力分数对 Instance 特征进行加权求和 (矩阵乘法)
-            # A (1xN) * x (Nx1024) -> (1x1024)
-            x = torch.mm(A, x)  # 得到 Bag Representation,KxL
-
-        if self.return_features: # switch only used for CIFAR-experiments
-            return x
-
-        x = self.top_layer(x)
-        # 返回: 
-        # x: Bag 的预测 Logits
-        # 0: 占位符
-        # A: 注意力分数 (Teacher 给 Student 的重要指导信息)
-        if returnBeforeSoftMaxA:
-            return x, torch.zeros_like(x), A, A_.squeeze(0)
-        return x, 0, A
-
     def _initialize_weights(self):
-        for y, m in enumerate(self.modules()):
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                for i in range(m.out_channels):
-                    m.weight.data[i].normal_(0, math.sqrt(2. / n))
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                # 使用 Kaiming 初始化（适合非对称激活如 ReLU/Tanh）
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-            elif isinstance(m, nn.Linear):
-                m.weight.data.normal_(0, 0.01)
-                m.bias.data.zero_()
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, returnBeforeSoftMaxA=False, scores_replaceAS=None):
+        if self.features is not None:
+            x = x.squeeze(0)
+            x = self.features(x)
+        H = x.view(x.shape[0], -1)  # 实例嵌入 H = {h_0, ..., h_N-1}
+        
+        A = self.attention(H)  # N x K
+        A = torch.transpose(A, 1, 0)  # K x N
+        if scores_replaceAS is not None:
+            A = scores_replaceAS
+        
+        if returnBeforeSoftMaxA:
+            A_ = A.clone()  # 保存 pre-softmax 值
+        
+        A = F.softmax(A, dim=1)  # softmax 归一化
+        
+        M = torch.mm(A, H)  # K x L (加权求和)
+        
+        logits = self.classifier(M.view(1, -1))
+        
+        if returnBeforeSoftMaxA:
+            return logits, M, A_, A
+        
+        return logits, M, A
+
 
 class Bag_Classifier_DSMIL_Head(nn.Module):
     """
@@ -549,6 +604,8 @@ class map_abmil(nn.Module):
 
     def forward(self, x):
         bag_prediction, _, _, instance_attn_score = self.model(x, returnBeforeSoftMaxA=True, scores_replaceAS=None)
+        # instance_attn_score = torch.sigmoid(instance_attn_score)
+        instance_attn_score = torch.softmax(instance_attn_score, dim=1)[:, 1]  # 取正类概率
         if len(instance_attn_score.shape)==1:
             instance_attn_score = instance_attn_score.unsqueeze(0)
         return bag_prediction, instance_attn_score

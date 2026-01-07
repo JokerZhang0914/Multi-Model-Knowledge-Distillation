@@ -85,7 +85,7 @@ class Optimizer:
             loss_student = 0.0 # 默认为 0，如果本 Epoch 不训练 Student
             student_test_auc = 0.0
 
-            if epoch % self.stuOptPeriod == 0:
+            if (epoch+1) % self.stuOptPeriod == 0:
                 loss_student = self.optimize_student(epoch)
                 torch.cuda.empty_cache()  # <--- 清理碎片
                 student_test_auc = self.evaluate_student(epoch)
@@ -224,6 +224,12 @@ class Optimizer:
         self.estimated_AttnScore_norm_para_min = [i.min() for i in patch_label_pred]
         self.estimated_AttnScore_norm_para_max = [i.max() for i in patch_label_pred]
 
+        #######################
+        print(f"[Debug Epoch {epoch}] AttnScore Norm Params:")
+        for i in range(self.num_teacher):
+            print(f"  Teacher {i}: min={self.estimated_AttnScore_norm_para_min[i]:.4f}, max={self.estimated_AttnScore_norm_para_max[i]:.4f}")
+        #########################
+        
         # # 5. 计算指标并记录AUC
         for i in range(self.num_teacher):
             # 将分数归一化到 [0, 1] (仅用于评估 AUC，不影响 min/max 参数)
@@ -236,6 +242,12 @@ class Optimizer:
         # print("Epoch:{} train_bag_AUC_byTeacher:{}".format(epoch, bag_auc_ByTeacher))
         epoch_avg_loss = epoch_loss_sum / len(loader)
 
+        # 在 optimize_teacher 返回前或循环外添加
+        print(f"[Debug Epoch {epoch}] Teacher 0 (ABMIL) train bag pred mean (pos prob): {torch.tensor(bag_label_pred[0]).mean().item():.4f}")
+        print(f"[Debug Epoch {epoch}] Teacher 1 (DSMIL) train bag pred mean (pos prob): {torch.tensor(bag_label_pred[1]).mean().item():.4f}")
+        print(f"[Debug Epoch {epoch}] Positive bags ratio in train: {(torch.tensor(bag_label_gt) == 1).float().mean().item():.4f}")
+        ########################################
+        
         return epoch_avg_loss
     
     
@@ -284,9 +296,29 @@ class Optimizer:
                     # 1. norm_AttnScore2Prob: 利用 optimize_teacher 中统计的 min/max 将分数映射到 [0, 1]
                     # 2. clamp: 截断数值防止 log(0)
                     # 3. 加权平均多个 Teacher 的结果
+                    # 归一化每个教师的分数
+                    normed = self.norm_AttnScore2Prob(instance_attn_score.squeeze(0), idx_teacher=i).clamp(1e-5, 1-1e-5)
+
+                    # === 新增打印：每个教师的原始分数统计 ===
+                    print(f"[Debug Epoch {epoch} Iter {iter}] Teacher {i} raw min/max/mean: "
+                        f"{instance_attn_score.min().item():.4f} / {instance_attn_score.max().item():.4f} / {instance_attn_score.mean().item():.4f}")
+
+                    print(f"[Debug Epoch {epoch} Iter {iter}] Teacher {i} normed mean: {normed.mean().item():.4f}")
+                    ####################
+                    
                     pseudo_instance_label += self.teacher_pseudo_label_merge_weight[i] * \
                         self.norm_AttnScore2Prob(instance_attn_score, idx_teacher=i).clamp(min=1e-5, max=1-1e-5).squeeze(0)
 
+            # === 新增打印：融合后的伪标签统计 ===
+            print(f"[Debug Epoch {epoch} Iter {iter}] Pseudo label mean: {pseudo_instance_label.mean().item():.4f} | "
+                f"min: {pseudo_instance_label.min().item():.4f} | max: {pseudo_instance_label.max().item():.4f}")
+
+            # === 新增打印：学生预测概率统计 ===
+            prediction = self.model_studentHead(feat)  # [B, 2]
+            pred_prob_pos = torch.softmax(prediction, dim=1)[:, 1]
+            print(f"[Debug Epoch {epoch} Iter {iter}] Student pred pos prob mean: {pred_prob_pos.mean().item():.4f}")
+            ######################    
+            
             # --- 关键策略：Hard Negative Mining (硬负样本修正) ---
             # 利用先验知识：如果一个包是阴性(0)，那么它里面所有的切片一定都是阴性(0)。
             # 强制将这些样本的伪标签设为 0，纠正 Teacher 可能的误判 (False Positive)。
@@ -347,6 +379,7 @@ class Optimizer:
         self.writer.add_scalar('train_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
 
         epoch_avg_loss = epoch_loss_sum / len(loader)
+        print(pseudo_instance_label.mean(), pseudo_instance_label.max())
         return epoch_avg_loss
 
     def evaluate_teacher(self, epoch):
@@ -486,7 +519,7 @@ def get_parser():
     # parser.add_argument('--arch', default='alexnet_MNIST', type=str, help='alexnet or resnet (default: alexnet)')
 
     # housekeeping
-    parser.add_argument('--device', default='0', type=str, help='GPU devices to use for storage and model')
+    parser.add_argument('--device', default='0,1', type=str, help='GPU devices to use for storage and model')
     parser.add_argument('--modeldevice', default='0', type=str, help='GPU numbers on which the CNN runs')
     parser.add_argument('--exp', default='self-label-default', help='path to experiment directory')
     parser.add_argument('--workers', default=0, type=int,help='number workers (default: 6)')
@@ -495,7 +528,7 @@ def get_parser():
     parser.add_argument('--log_iter', default=200, type=int, help='log every x-th batch (default: 200)')
     parser.add_argument('--seed', default=10, type=int, help='random seed')
 
-    parser.add_argument('--dataset_downsampling', default=0.1, type=float, help='sampling the dataset for Debug')
+    parser.add_argument('--dataset_downsampling', default=0.05, type=float, help='sampling the dataset for Debug')
 
     parser.add_argument('--PLPostProcessMethod', default='NegGuide', type=str,
                         help='Post-processing method of Attention Scores to build Pseudo Lables',
@@ -504,7 +537,7 @@ def get_parser():
                         help='Type of using Student Prediction to imporve Teacher '
                              '[ReplaceAS, FilterNegInstance_Top95, FilterNegInstance_ThreProb95, PseudoBag_88_20]')
     parser.add_argument('--smoothE', default=100, type=int, help='num of epoch to apply StuFilter')
-    parser.add_argument('--stu_loss_weight_neg', default=1.0, type=float, help='weight of neg instances in stu training')
+    parser.add_argument('--stu_loss_weight_neg', default=0.5, type=float, help='weight of neg instances in stu training')
     parser.add_argument('--stuOptPeriod', default=1, type=int, help='period of stu optimization')
     # parser.add_argument('--TeacherLossWeight', nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0', required=True)
     # parser.add_argument('--PLMergeWeight', nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5', required=True)
@@ -550,8 +583,8 @@ if __name__ == '__main__':
     model_student_head = map_student(student_head(input_feat_dim=512)).to(device)
 
     optimizer_encoder = torch.optim.SGD(model_encoder.parameters(), lr=args.lr)
-    optimizer_abmil_teacher_head = torch.optim.SGD(model_abmil_teacher_head.parameters(), lr=args.lr)
-    optimizer_dsmil_teacher_head = torch.optim.SGD(model_dsmil_teacher_head.parameters(), lr=args.lr)
+    optimizer_abmil_teacher_head = torch.optim.SGD(model_abmil_teacher_head.model.parameters(), lr=args.lr)
+    optimizer_dsmil_teacher_head = torch.optim.SGD(model_dsmil_teacher_head.model.parameters(), lr=args.lr)
     optimizer_student_head = torch.optim.SGD(model_student_head.parameters(), lr=args.lr)
 
     ds_train, ds_test = gather_align_Img()
