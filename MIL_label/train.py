@@ -619,7 +619,7 @@ if __name__ == '__main__':
     utils.setup_runtime(seed=42, cuda_dev_id=list(np.unique(args.modeldevice + args.device)))
     print(name)
 
-    writer = SummaryWriter('/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs_mil_label/%s'%name)
+    writer = SummaryWriter('/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/runs_mil_label/%s'%name)
     writer.add_text('args', " \n".join(['%s %s' % (arg, getattr(args, arg)) for arg in vars(args)]))
 
     # model

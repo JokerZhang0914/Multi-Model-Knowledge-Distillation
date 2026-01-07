@@ -41,6 +41,7 @@ __pycache__/
 # 运行与实验输出目录（如 TensorBoard / PyTorch）
 # =========================
 runs_mil_label/
+runs/
 
 # 模型权重
 checkpoints/

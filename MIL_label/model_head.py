@@ -740,3 +740,84 @@ class map_student(nn.Module):
             (1 - neg_weight) * target * torch.log(prediction[:, 1] + 1e-5)
         )
         return loss
+
+class map_abmil_test(nn.Module):
+    """
+    Teacher Head 包装器 1：Attention-based MIL
+    """
+    def __init__(self, model):
+        super(map_abmil_test, self).__init__()
+        self.model = model
+
+    def forward(self, x):
+        # 这里的 instance_attn_score 对应 A_ (Raw Attention Scores, Before Softmax)
+        # 这对于 Min-Max 归一化统计非常重要，因为 Raw Score 的分布范围更广，更容易统计出 min/max
+        bag_prediction, _, _, instance_attn_score = self.model(x, returnBeforeSoftMaxA=True, scores_replaceAS=None)
+        
+        # 确保维度是 [1, N]
+        if len(instance_attn_score.shape) == 1:
+            instance_attn_score = instance_attn_score.unsqueeze(0)
+            
+        return bag_prediction, instance_attn_score
+
+    def get_loss(self, output_bag, output_inst, bag_label):
+        # output_bag: [1, 2] 经过 Softmax 后的概率
+        # bag_label: [1] 真实标签 (0 或 1)
+        
+        # 取出正类概率 (Class 1)
+        prob_pos = output_bag[0, 1]
+        bag_label = bag_label.float().squeeze()
+        
+        # 手动计算 Binary Cross Entropy
+        # 加上 1e-6 防止 log(0)
+        loss = -1. * (bag_label * torch.log(prob_pos + 1e-6) 
+                      + (1. - bag_label) * torch.log(1. - prob_pos + 1e-6))
+        return loss
+
+
+class map_dsmil_test(nn.Module):
+    """
+    Teacher Head 包装器 2：DSMIL
+    【重要修改】：移除了 CrossEntropyLoss，改为手动计算 BCE，适配 Optimizer 传入的 Probabilities。
+    """
+    def __init__(self, model):
+        super(map_dsmil_test, self).__init__()
+        self.model = model
+        # 移除 self.criterion = torch.nn.CrossEntropyLoss()，因为它不能处理概率输入
+
+    def forward(self, x):
+        # DSMIL Head 返回: instance_scores(Raw), bag_score(Logits), U, b_embedding
+        instance_scores, bag_prediction, _, _ = self.model(x)
+        
+        # 将 Instance Raw Scores 转为概率，用于后续计算 Max-Instance Loss
+        # 同时也作为伪标签的基础返回给 Optimizer
+        instance_probs = torch.softmax(instance_scores, dim=1)
+        
+        # 取出正类概率，并调整形状为 [1, N]
+        instance_prob_pos = instance_probs[:, 1].unsqueeze(0)
+        
+        return bag_prediction, instance_prob_pos
+
+    def get_loss(self, output_bag, output_inst, bag_label):
+        # output_bag: [1, 2] (Optimizer 传入的 Bag 概率)
+        # output_inst: [1, N] (Forward 返回的 Instance 概率)
+        # bag_label: [1]
+        
+        bag_label = bag_label.float().squeeze()
+        
+        # 1. Bag Loss (Stream 2)
+        prob_bag_pos = output_bag[0, 1]
+        bag_loss = -1. * (bag_label * torch.log(prob_bag_pos + 1e-6) 
+                          + (1. - bag_label) * torch.log(1. - prob_bag_pos + 1e-6))
+
+        # 2. Max Instance Loss (Stream 1)
+        # 找出分数最高的 Instance
+        max_id = torch.argmax(output_inst.squeeze(0))
+        bag_prob_byMax = output_inst.squeeze(0)[max_id] # 这是概率
+        
+        bag_loss_byMax = -1. * (bag_label * torch.log(bag_prob_byMax + 1e-6) 
+                                + (1. - bag_label) * torch.log(1. - bag_prob_byMax + 1e-6))
+        
+        # 联合 Loss
+        loss = 0.5 * bag_loss + 0.5 * bag_loss_byMax
+        return loss
