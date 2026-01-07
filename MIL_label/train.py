@@ -1,6 +1,6 @@
 """
-/home/zhaokaizhang/.conda/envs/mmked/bin/python /home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/train.py --device 0,1
-"""
+/home/zhaokaizhang/.conda/envs/mmked/bin/python /home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/train.py --device 0,1 --epochs 20 --dataset_downsampling 1
+tensorboard --logdir /home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs_mil_label --port 6006"""
 
 import argparse
 import os
@@ -83,7 +83,7 @@ class Optimizer:
             torch.cuda.empty_cache()  # <--- 清理碎片
 
             loss_student = 0.0 # 默认为 0，如果本 Epoch 不训练 Student
-            auc_student = 0.0
+            student_test_auc = 0.0
 
             if epoch % self.stuOptPeriod == 0:
                 loss_student = self.optimize_student(epoch)
@@ -94,7 +94,7 @@ class Optimizer:
             if (epoch + 1) % 1 == 0:
                 print(f"  > Train Loss (Teacher): {loss_teacher:.4f}")
                 print(f"  > Train Loss (Student): {loss_student:.4f}")
-                print(f"  > Test AUC (Student)  : {auc_student:.4f}")
+                print(f"  > Test AUC (Student)  : {student_test_auc:.4f}")
                 for idx, auc_t in enumerate(aucs_teacher):
                     print(f"  > Test AUC (Teacher {idx}): {auc_t:.4f}")
                 print("-" * 30)
@@ -119,6 +119,7 @@ class Optimizer:
                 torch.save(checkpoint, os.path.join(save_path_root, 'checkpoint_latest.pth'))
 
                 # 3. 保存 Best (最佳) 权重 (基于 Student Bag AUC)
+                self.current_student_auc = student_test_auc
                 if hasattr(self, 'current_student_auc') and self.current_student_auc > self.best_bag_auc:
                     self.best_bag_auc = self.current_student_auc
                     torch.save(checkpoint, os.path.join(save_path_root, 'checkpoint_best.pth'))
@@ -469,7 +470,7 @@ class Optimizer:
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Implementation of Self-Label')
     # optimizer
-    parser.add_argument('--epochs', default=1000, type=int, help='number of epochs')
+    parser.add_argument('--epochs', default=20, type=int, help='number of epochs')
     parser.add_argument('--batch_size', default=64, type=int, help='batch size (default: 256)')
     parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate (default: 0.05)')
     parser.add_argument('--lrdrop', default=1000, type=int, help='multiply LR by 0.5 every (default: 150 epochs)')
@@ -494,7 +495,7 @@ def get_parser():
     parser.add_argument('--log_iter', default=200, type=int, help='log every x-th batch (default: 200)')
     parser.add_argument('--seed', default=10, type=int, help='random seed')
 
-    parser.add_argument('--dataset_downsampling', default=0.02, type=float, help='sampling the dataset for Debug')
+    parser.add_argument('--dataset_downsampling', default=0.1, type=float, help='sampling the dataset for Debug')
 
     parser.add_argument('--PLPostProcessMethod', default='NegGuide', type=str,
                         help='Post-processing method of Attention Scores to build Pseudo Lables',
@@ -509,7 +510,7 @@ def get_parser():
     # parser.add_argument('--PLMergeWeight', nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5', required=True)
     parser.add_argument('--teacher_loss_weight', default=[1.0, 1.0], nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0')
     parser.add_argument('--PLMergeWeight', default=[0.5, 0.5], nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5')
-    parser.add_argument('--save_dir', default='./checkpoints', type=str, help='Directory to save checkpoints')
+    parser.add_argument('--save_dir', default='/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/checkpoints', type=str, help='Directory to save checkpoints')
     parser.add_argument('--resume_mode', default='none', choices=['none', 'best', 'latest'], 
                         help='Resume training from: "none" (start fresh), "best" (best AUC), or "latest" (last epoch)')
     parser.add_argument('--resume_path', default='', type=str, 
@@ -535,7 +536,7 @@ if __name__ == '__main__':
     utils.setup_runtime(seed=42, cuda_dev_id=list(np.unique(args.modeldevice + args.device)))
     print(name)
 
-    writer = SummaryWriter('./runs_mil_label/%s'%name)
+    writer = SummaryWriter('/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs_mil_label/%s'%name)
     writer.add_text('args', " \n".join(['%s %s' % (arg, getattr(args, arg)) for arg in vars(args)]))
 
     # model
@@ -634,5 +635,5 @@ if __name__ == '__main__':
 
     )
 
-    save_path = os.path.join(args.save_dir, name)
+    save_path = os.path.join(args.save_dir)
     optimizer.optimize(save_path_root=save_path)

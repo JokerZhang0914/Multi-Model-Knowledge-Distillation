@@ -72,8 +72,9 @@ def gather_align_Img(root_dir='', split=0.7):
     #     np.array(pd.read_csv("D:/公开数据集/label_gongkai0.csv"))
     # ], axis=0)
     raw_label = np.concatenate([
-        np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
-        np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai0.csv'))
+        #np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
+        np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai0.csv')),
+        np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai1.csv'))
     ], axis=0)
     
     # clinical_info = pd.read_excel("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/path.xlsx").to_numpy()
@@ -83,7 +84,8 @@ def gather_align_Img(root_dir='', split=0.7):
     # patient_gongkai0 = glob("D:/公开数据集/0_normal_aligned/*")
     patient_zhongliu = glob(data_path + '/肿瘤医院_1/dataset_aligned_zhongliu/*')
     patient_gongkai0 = glob(data_path + '/公开数据集/0_normal_aligned/*')
-    patient_all = patient_zhongliu + patient_gongkai0
+    patient_gongkai1 = glob(data_path + '/公开数据集/1_hyperplastic_aligned/*')
+    patient_all = patient_gongkai0 + patient_gongkai1
     patient_all = np.array(patient_all)
 
     # match img and label
@@ -149,8 +151,13 @@ class DataSet_MIL(torch.utils.data.Dataset):
             self.transform = transforms.Compose([
                 transforms.Resize(size=(512, 512)),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5334944, 0.31880298, 0.2396933],
-                                     std=[0.2623876, 0.2056972, 0.16340312])
+                # transforms.Normalize(mean=[0.5334944, 0.31880298, 0.2396933],
+                #                      std=[0.2623876, 0.2056972, 0.16340312])
+                # 肿瘤+公开0
+
+                transforms.Normalize(mean=[np.float32(0.50730854), np.float32(0.31165484), np.float32(0.23325795)],
+                                     std=[np.float32(0.27994397), np.float32(0.22124837), np.float32(0.17467397)])
+                # 公开0+公开1
             ])
 
         all_slides = ds
@@ -219,13 +226,18 @@ class DataSet_MIL(torch.utils.data.Dataset):
                 idx_patch_from_slide_i = idx_patch_from_slide_i[:64]
 
             bag = self.all_patches[idx_patch_from_slide_i]
-            bag_normed = np.zeros([bag.shape[0], 3, 512, 512], dtype=np.float32)
+            bag_normed = []
             for i in range(bag.shape[0]):
                 if self.preload:
                     instance_img = bag[i]
                 else:
                     instance_img = io.imread(bag[i])
-                bag_normed[i, :, :, :] = self.transform(Image.fromarray(np.uint8(instance_img), 'RGB'))
+                # 先转tensor再显式copy为numpy数组
+                img_tensor = self.transform(Image.fromarray(np.uint8(instance_img), 'RGB'))
+                img_np = img_tensor.cpu().numpy().copy()
+                bag_normed.append(img_np)
+            # 统一堆叠为numpy数组
+            bag_normed = np.stack(bag_normed, axis=0).astype(np.float32)
             bag = bag_normed
             patch_labels = self.patch_label[idx_patch_from_slide_i]
             slide_label = self.patch_corresponding_slide_label[idx_patch_from_slide_i].max()
