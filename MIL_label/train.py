@@ -197,6 +197,12 @@ class Optimizer:
                 if isinstance(loss_teacher, torch.Tensor):
                     epoch_loss_sum += loss_teacher.item()
 
+                # --- 【新增】梯度裁剪，防止爆炸 ---
+                torch.nn.utils.clip_grad_norm_(self.model_encoder.parameters(), max_norm=5.0)
+                for model_t in self.model_teacherHead:
+                    torch.nn.utils.clip_grad_norm_(model_t.parameters(), max_norm=5.0)
+                # --------------------------------
+
                 self.optimizer_encoder.step()
                 for optimizer_teacherHead_i in self.optimizer_teacherHead:
                     optimizer_teacherHead_i.step()
@@ -341,6 +347,11 @@ class Optimizer:
 
             loss_student.backward()
 
+            # --- 【新增】梯度裁剪 ---
+            torch.nn.utils.clip_grad_norm_(self.model_encoder.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(self.model_studentHead.parameters(), max_norm=5.0)
+            # -----------------------
+
             epoch_loss_sum += loss_student.item()
 
             self.optimizer_encoder.step()
@@ -440,6 +451,8 @@ class Optimizer:
     def evaluate_student(self, epoch):
         """评估 Student 的性能"""
         self.model_encoder.eval()
+        for model_teacherHead_i in self.model_teacherHead:
+            model_teacherHead_i.eval()
         self.model_studentHead.eval()
         
         loader = self.test_instanceloader
@@ -494,11 +507,48 @@ class Optimizer:
 
         return bag_auc_ByStudent
 
+    # def norm_AttnScore2Prob(self, attn_score, idx_teacher):
+    #     """辅助函数：将 Teacher 的 Raw Attention Score 归一化为 0-1 的概率值"""
+    #     prob = (attn_score - self.estimated_AttnScore_norm_para_min[idx_teacher]) / \
+    #            (self.estimated_AttnScore_norm_para_max[idx_teacher] - self.estimated_AttnScore_norm_para_min[idx_teacher])
+    #     return prob
+
     def norm_AttnScore2Prob(self, attn_score, idx_teacher):
-        """辅助函数：将 Teacher 的 Raw Attention Score 归一化为 0-1 的概率值"""
-        prob = (attn_score - self.estimated_AttnScore_norm_para_min[idx_teacher]) / \
-               (self.estimated_AttnScore_norm_para_max[idx_teacher] - self.estimated_AttnScore_norm_para_min[idx_teacher])
-        return prob
+        """
+        辅助函数：将 Teacher 的 Raw Attention Score 归一化为 0-1 的概率值
+        自动处理 1D (Global Log) 和 2D (Student Training) 两种情况
+        """
+        # --- 情况 A: 输入是 1D Tensor ---
+        # 来源: optimize_teacher 函数末尾，所有 Patch 拼接后的大长条
+        # 目的: 仅用于计算 AUC 或 Tensorboard 记录，不需要复杂的 Bag-wise 归一化
+        if attn_score.dim() == 1:
+            _min = attn_score.min()
+            _max = attn_score.max()
+            # 简单的全局归一化，防止除零
+            prob = (attn_score - _min) / (_max - _min + 1e-8)
+            return prob
+
+        # --- 情况 B: 输入是 2D Tensor [Batch, N_patches] ---
+        # 来源: optimize_student 训练循环中，处理单个 Bag
+        # 目的: 生成伪标签 (Pseudo Label) 指导学生学习，必须精确
+        elif attn_score.dim() == 2:
+            if idx_teacher == 0: 
+                # Teacher 0 (ABMIL): 使用【Bag 内部】Min-Max 归一化
+                # 解释: ABMIL 的 Softmax 导致分数依赖于 Bag 大小，
+                # 必须在当前 Bag 内部拉伸分数，凸显相对重要的 Instance
+                _min = attn_score.min(dim=1, keepdim=True)[0]
+                _max = attn_score.max(dim=1, keepdim=True)[0]
+                prob = (attn_score - _min) / (_max - _min + 1e-8)
+                return prob
+            else:
+                # Teacher 1 (DSMIL): 维持原有逻辑 (使用全局统计参数)
+                # DSMIL 的输出通常不受 Bag 大小剧烈影响，可以使用全局参数
+                global_min = self.estimated_AttnScore_norm_para_min[idx_teacher]
+                global_max = self.estimated_AttnScore_norm_para_max[idx_teacher]
+                prob = (attn_score - global_min) / (global_max - global_min + 1e-8)
+                return prob
+        
+        return attn_score
     
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Implementation of Self-Label')
@@ -582,10 +632,15 @@ if __name__ == '__main__':
     model_dsmil_teacher_head = map_dsmil(teacher_DSMIL_head(input_feat_dim=512)).to(device)
     model_student_head = map_student(student_head(input_feat_dim=512)).to(device)
 
-    optimizer_encoder = torch.optim.SGD(model_encoder.parameters(), lr=args.lr)
-    optimizer_abmil_teacher_head = torch.optim.SGD(model_abmil_teacher_head.model.parameters(), lr=args.lr)
-    optimizer_dsmil_teacher_head = torch.optim.SGD(model_dsmil_teacher_head.model.parameters(), lr=args.lr)
-    optimizer_student_head = torch.optim.SGD(model_student_head.parameters(), lr=args.lr)
+    # optimizer_encoder = torch.optim.SGD(model_encoder.parameters(), lr=args.lr)
+    # optimizer_abmil_teacher_head = torch.optim.SGD(model_abmil_teacher_head.model.parameters(), lr=args.lr)
+    # optimizer_dsmil_teacher_head = torch.optim.SGD(model_dsmil_teacher_head.model.parameters(), lr=args.lr)
+    # optimizer_student_head = torch.optim.SGD(model_student_head.parameters(), lr=args.lr)
+
+    optimizer_encoder = torch.optim.SGD(model_encoder.parameters(), lr=args.lr * 0.1, weight_decay=1e-4, momentum=0.9)
+    optimizer_abmil_teacher_head = torch.optim.SGD(model_abmil_teacher_head.parameters(), lr=args.lr, weight_decay=1e-4, momentum=0.9)
+    optimizer_dsmil_teacher_head = torch.optim.SGD(model_dsmil_teacher_head.parameters(), lr=args.lr, weight_decay=1e-4, momentum=0.9)
+    optimizer_student_head = torch.optim.SGD(model_student_head.parameters(), lr=args.lr, weight_decay=1e-4, momentum=0.9)
 
     ds_train, ds_test = gather_align_Img()
 

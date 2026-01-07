@@ -221,6 +221,7 @@ class DataSet_MIL(torch.utils.data.Dataset):
             # 找出所有属于该 Slide 的 patch 索引
             idx_patch_from_slide_i = np.where(self.patch_corresponding_slide_index==index)[0]
 
+            np.random.shuffle(idx_patch_from_slide_i)
             # 硬编码限制：每个Bag最多取100张图
             if len(idx_patch_from_slide_i) > 64:
                 idx_patch_from_slide_i = idx_patch_from_slide_i[:64]
