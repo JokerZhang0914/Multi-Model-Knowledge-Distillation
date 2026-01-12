@@ -72,7 +72,7 @@ def gather_align_Img(root_dir='', split=0.7):
     #     np.array(pd.read_csv("D:/公开数据集/label_gongkai0.csv"))
     # ], axis=0)
     raw_label = np.concatenate([
-        # np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
+        #np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
         np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai0.csv')),
         np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai1.csv'))
     ], axis=0)
@@ -85,7 +85,7 @@ def gather_align_Img(root_dir='', split=0.7):
     patient_zhongliu = glob(data_path + '/肿瘤医院_1/dataset_aligned_zhongliu/*')
     patient_gongkai0 = glob(data_path + '/公开数据集/0_normal_aligned/*')
     patient_gongkai1 = glob(data_path + '/公开数据集/1_hyperplastic_aligned/*')
-    patient_all = patient_gongkai0 + patient_gongkai1
+    patient_all = patient_gongkai0 + patient_gongkai1 #+ patient_zhongliu
     patient_all = np.array(patient_all)
 
     # match img and label
@@ -157,7 +157,11 @@ class DataSet_MIL(torch.utils.data.Dataset):
 
                 transforms.Normalize(mean=[np.float32(0.50730854), np.float32(0.31165484), np.float32(0.23325795)],
                                      std=[np.float32(0.27994397), np.float32(0.22124837), np.float32(0.17467397)])
-                # 公开0+公开1
+                # # 公开0+公开1
+
+                # transforms.Normalize(mean=[np.float32(0.513409), np.float32(0.32925022), np.float32(0.24829857)],
+                #                      std=[np.float32(0.28215688), np.float32(0.22659373), np.float32(0.18255435)])
+                # # 公开0+公开1+肿瘤
             ])
 
         all_slides = ds
@@ -367,6 +371,6 @@ def test_dataset_integrity():
 
 if __name__ == '__main__':
     # print("...正在计算 Mean 和 Std...")
-    # cal_img_mean_std()
+    cal_img_mean_std()
 
-    test_dataset_integrity()
+    #test_dataset_integrity()

@@ -3,267 +3,262 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from tensorboardX import SummaryWriter
 from tqdm import tqdm
-from sklearn import metrics
-import torch.nn.functional as F
+from sklearn.metrics import roc_auc_score, roc_curve
+import datetime
 
-# 引入 TensorBoard
-from torch.utils.tensorboard import SummaryWriter
-
-# 导入你现有的模块
+# 复用您提供的模块
+import utils
 from dataset import DataSet_MIL, gather_align_Img
-from model_head import PretrainedResNet18_Encoder, Bag_Classifier_Attention_Head
+import torchvision.models as models
 
-# 设置随机种子以保证可复现性
-def setup_seed(seed):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
+# ==========================================
+# 1. 重新定义清晰的 ABMIL 模型
+# ==========================================
 
-def get_args():
-    parser = argparse.ArgumentParser(description='Debug ABMIL Training')
-    parser.add_argument('--epochs', default=20, type=int)
-    parser.add_argument('--lr', default=0.0001, type=float, help='Learning rate') # 降低了默认LR，MIL对此敏感
-    parser.add_argument('--weight_decay', default=1e-4, type=float)
-    parser.add_argument('--device', default='cuda:3', type=str)
-    parser.add_argument('--downsample', default=0.2, type=float, help='使用多少比例的数据进行调试')
-    parser.add_argument('--seed', default=42, type=int)
-    # 新增 log_dir 参数
-    parser.add_argument('--log_dir', default='./runs/runs_abmil', type=str, help='Tensorboard 日志目录')
-    return parser.parse_args()
+class FeatureExtractor(nn.Module):
+    """
+    使用 ResNet18 提取特征，去除最后的 FC 层。
+    """
+    def __init__(self):
+        super(FeatureExtractor, self).__init__()
+        resnet = models.resnet18(pretrained=True)
+        # 去掉最后的全连接层
+        self.features = nn.Sequential(*list(resnet.children())[:-1])
+        
+    def forward(self, x):
+        # x shape: [N, 3, H, W]
+        x = self.features(x)
+        # x shape: [N, 512, 1, 1] -> [N, 512]
+        x = x.view(x.size(0), -1)
+        return x
 
-def train_one_epoch(encoder, head, loader, optimizer, device, epoch, writer):
-    encoder.train()
-    head.train()
-    
+class CleanABMIL(nn.Module):
+    """
+    标准的 Attention-based MIL 模型。
+    结构: ResNet -> (Projection) -> Attention -> Weighted Sum -> Classifier
+    """
+    def __init__(self, input_dim=512, hidden_dim=256, dropout=0.5):
+        super(CleanABMIL, self).__init__()
+        
+        self.feature_extractor = FeatureExtractor()
+        
+        # 1. 特征投影层 (可选，用于降低维度或增加非线性)
+        self.projector = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+        
+        # 2. 注意力网络 (V.T * tanh(W * H))
+        # 这里使用经典的 Gated Attention 的简化版 (Tanh Attention)
+        self.attention_V = nn.Sequential(
+            nn.Linear(hidden_dim, 128),
+            nn.Tanh()
+        )
+        self.attention_W = nn.Linear(128, 1) # 输出分数
+        
+        # 3. 分类器
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, 1) # 二分类输出一个 logit
+        )
+
+    def forward(self, x):
+        """
+        x: [B, N, C, H, W] -> 由于是 Bag 模式，B 通常为 1
+        """
+        x = x.squeeze(0) # [N, C, H, W]
+        
+        # 1. 提取特征
+        H = self.feature_extractor(x) # [N, 512]
+        
+        # 2. 投影
+        H_proj = self.projector(H) # [N, 256]
+        
+        # 3. 计算注意力分数
+        A_V = self.attention_V(H_proj) # [N, 128]
+        A = self.attention_W(A_V)      # [N, 1]
+        A = torch.transpose(A, 1, 0)   # [1, N]
+        A = F.softmax(A, dim=1)        # 归一化注意力分数
+        
+        # 4. 特征聚合 (Bag Embedding)
+        M = torch.mm(A, H_proj)        # [1, N] * [N, 256] -> [1, 256]
+        
+        # 5. 分类
+        logits = self.classifier(M)    # [1, 1]
+        
+        # 返回 Logits 和 Attention Weights (用于可视化)
+        return logits, A
+
+# ==========================================
+# 2. 辅助函数
+# ==========================================
+
+def calculate_metrics(y_true, y_pred_prob):
+    try:
+        auc = roc_auc_score(y_true, y_pred_prob)
+    except ValueError:
+        auc = 0.5 # 防止只有一个类别时报错
+    return auc
+
+def train_one_epoch(model, loader, optimizer, criterion, device, epoch, writer):
+    model.train()
     total_loss = 0.0
-    all_probs = []
     all_labels = []
-
-    print(f"\n[Epoch {epoch}] Training Started...")
+    all_probs = []
     
     # 进度条
-    pbar = tqdm(loader, desc=f'Epoch {epoch} Train', ascii=True)
+    pbar = tqdm(loader, desc=f'Train Epoch {epoch}', leave=False)
     
-    # 获取总步数用于 Tensorboard x轴
-    steps_per_epoch = len(loader)
-    
-    for batch_idx, (data, label_info, _) in enumerate(pbar):
-        global_step = epoch * steps_per_epoch + batch_idx
+    for i, (data, label_info, _) in enumerate(pbar):
+        # data: [1, N, 3, 512, 512]
+        # label_info[1]: slide_label [1]
         
-        # 1. 解包数据
-        # data: [1, N_patches, 3, 512, 512] -> [N, 3, 512, 512]
-        bag_imgs = data.squeeze(0).to(device) 
+        bag_label = label_info[1].float().to(device)
+        data = data.to(device)
         
-        # label_info: [patch_labels, slide_label, slide_index, slide_name]
-        # 我们只需要 slide_label (bag label)
-        bag_label = label_info[1].float().to(device) # [1]
+        # 前向传播
+        logits, _ = model(data) # logits: [1, 1]
         
-        # 2. 前向传播
+        # 既然是二分类，使用 sigmoid 将 logit 转为概率
+        prob = torch.sigmoid(logits)
+        
+        # 计算 Loss
+        loss = criterion(prob.view(-1), bag_label.view(-1))
+        
+        # 反向传播
         optimizer.zero_grad()
-        
-        # 2.1 特征提取
-        # feats: [N, 512]
-        feats = encoder(bag_imgs)
-        
-        # --- DEBUG: 检查特征是否正常 ---
-        feat_norm = feats.norm(p=2, dim=1).mean().item()
-        if torch.isnan(feats).any():
-            print(f"[Error] NaN detected in Features at Batch {batch_idx}")
-            continue
-
-        # 2.2 MIL Head 前向传播
-        # Bag_Classifier_Attention_Head 返回: logits, 0, Attention_Weights
-        logits, _, attention_weights = head(feats)
-        
-        # logits: [1, num_classes] (Logits before Softmax)
-        # attention_weights: [1, N] (Softmaxed weights, sum=1)
-        
-        # 3. 计算损失
-        probs = torch.softmax(logits, dim=1) # [1, 2]
-        prob_pos = probs[0, 1]
-        
-        # 计算 BCE Loss
-        loss = -1. * (bag_label * torch.log(prob_pos + 1e-6) + (1. - bag_label) * torch.log(1. - prob_pos + 1e-6))
-        
         loss.backward()
         
-        # --- DEBUG: 梯度裁剪 ---
-        torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=5.0)
-        torch.nn.utils.clip_grad_norm_(head.parameters(), max_norm=5.0)
+        # 梯度裁剪（防止梯度爆炸）
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
         
         optimizer.step()
         
         total_loss += loss.item()
         
         # 收集用于计算 Epoch AUC
-        all_probs.append(prob_pos.item())
         all_labels.append(bag_label.item())
+        all_probs.append(prob.item())
         
-        # ================= TensorBoard Logging (Step Level) =================
-        # 1. 基础 Loss 和 LR
-        writer.add_scalar('Train_Step/Loss', loss.item(), global_step)
-        writer.add_scalar('Train_Step/LR', optimizer.param_groups[0]['lr'], global_step)
-        
-        # 2. Attention 统计 (ABMIL 的核心)
-        # 如果 Max 很小，说明 Attention 没学好
-        attn_min = attention_weights.min().item()
-        attn_max = attention_weights.max().item()
-        attn_mean = attention_weights.mean().item()
-        
-        writer.add_scalar('Debug/Attention_Max', attn_max, global_step)
-        writer.add_scalar('Debug/Attention_Mean', attn_mean, global_step)
-        writer.add_scalar('Debug/Attention_Min', attn_min, global_step)
-        
-        # 3. 特征统计 (监控 ResNet Encoder 是否稳定)
-        writer.add_scalar('Debug/Feature_Norm', feat_norm, global_step)
-        
-        # 4. 预测值监控 (看是否一直输出0或1)
-        writer.add_scalar('Debug/Prediction_Prob', prob_pos.item(), global_step)
+        # 实时更新进度条
+        pbar.set_postfix({'loss': loss.item()})
 
-        # 5. 直方图 (每 50 个 batch 记录一次，太频繁会使日志很大)
-        if batch_idx % 50 == 0:
-            writer.add_histogram('Debug_Hist/Attention_Weights', attention_weights, global_step)
-            # 也可以看特征分布
-            # writer.add_histogram('Debug_Hist/Features', feats, global_step)
-        # ====================================================================
-        
-        # --- DEBUG: 详细打印 (每10个Batch打印一次) ---
-        if batch_idx % 10 == 0:
-            num_patches = bag_imgs.size(0)
-            uniform_val = 1.0 / num_patches
-            
-            tqdm.write(
-                f"\n[Batch {batch_idx}] "
-                f"Label: {int(bag_label.item())} | Pred: {prob_pos.item():.4f} | Loss: {loss.item():.4f} | "
-                f"N_Patch: {num_patches} | FeatNorm: {feat_norm:.2f}\n"
-                f"    Attn Stats -> Min: {attn_min:.4f} | Max: {attn_max:.4f} (Uniform would be {uniform_val:.4f})"
-            )
-            
-            if attn_max < uniform_val * 1.5:
-                tqdm.write("    [Warning] Attention is very flat! (Model might be guessing)")
+    # 计算 Epoch 级指标
+    epoch_loss = total_loss / len(loader)
+    epoch_auc = calculate_metrics(all_labels, all_probs)
+    
+    # TensorBoard
+    writer.add_scalar('Train/Loss', epoch_loss, epoch)
+    writer.add_scalar('Train/AUC', epoch_auc, epoch)
+    
+    print(f"Epoch {epoch} [Train] Loss: {epoch_loss:.4f}, AUC: {epoch_auc:.4f}")
+    return epoch_loss, epoch_auc
 
-    # 计算 Epoch 指标
-    all_labels = np.array(all_labels)
-    all_probs = np.array(all_probs)
-    
-    # 防止只有一个类别导致 AUC 报错
-    if len(np.unique(all_labels)) > 1:
-        epoch_auc = metrics.roc_auc_score(all_labels, all_probs)
-    else:
-        epoch_auc = 0.0
-        
-    epoch_acc = ((all_probs > 0.5) == all_labels).mean()
-    avg_loss = total_loss / len(loader)
-    
-    # ================= TensorBoard Logging (Epoch Level) =================
-    writer.add_scalar('Train_Epoch/Average_Loss', avg_loss, epoch)
-    writer.add_scalar('Train_Epoch/AUC', epoch_auc, epoch)
-    writer.add_scalar('Train_Epoch/Accuracy', epoch_acc, epoch)
-    # =====================================================================
-    
-    print(f"Epoch {epoch} Result: Loss={avg_loss:.4f}, AUC={epoch_auc:.4f}, Acc={epoch_acc:.4f}")
-    return avg_loss, epoch_auc
-
-def validate(encoder, head, loader, device, epoch, writer):
-    encoder.eval()
-    head.eval()
-    
-    all_probs = []
+def validate(model, loader, criterion, device, epoch, writer):
+    model.eval()
+    total_loss = 0.0
     all_labels = []
+    all_probs = []
     
-    print("Validating...")
     with torch.no_grad():
-        for batch_idx, (data, label_info, _) in enumerate(tqdm(loader, ascii=True)):
-            bag_imgs = data.squeeze(0).to(device)
+        for data, label_info, _ in tqdm(loader, desc=f'Val Epoch {epoch}', leave=False):
             bag_label = label_info[1].float().to(device)
+            data = data.to(device)
             
-            feats = encoder(bag_imgs)
-            logits, _, _ = head(feats)
+            logits, _ = model(data)
+            prob = torch.sigmoid(logits)
             
-            prob_pos = torch.softmax(logits, dim=1)[0, 1]
+            loss = criterion(prob.view(-1), bag_label.view(-1))
+            total_loss += loss.item()
             
-            all_probs.append(prob_pos.item())
             all_labels.append(bag_label.item())
+            all_probs.append(prob.item())
+            
+    epoch_loss = total_loss / len(loader)
+    epoch_auc = calculate_metrics(all_labels, all_probs)
+    
+    # TensorBoard
+    writer.add_scalar('Val/Loss', epoch_loss, epoch)
+    writer.add_scalar('Val/AUC', epoch_auc, epoch)
+    
+    print(f"Epoch {epoch} [Val]   Loss: {epoch_loss:.4f}, AUC: {epoch_auc:.4f}")
+    return epoch_auc
 
-    all_labels = np.array(all_labels)
-    all_probs = np.array(all_probs)
-    
-    if len(np.unique(all_labels)) > 1:
-        val_auc = metrics.roc_auc_score(all_labels, all_probs)
-    else:
-        val_auc = 0.0
-        
-    print(f"Validation AUC: {val_auc:.4f}")
-    
-    # ================= TensorBoard Logging (Validation) =================
-    writer.add_scalar('Val/AUC', val_auc, epoch)
-    # ====================================================================
-    
-    return val_auc
+# ==========================================
+# 3. 主程序
+# ==========================================
 
 def main():
-    args = get_args()
-    setup_seed(args.seed)
+    parser = argparse.ArgumentParser(description='Debug ABMIL Teacher')
+    parser.add_argument('--device', default='2', type=str, help='CUDA device index')
+    parser.add_argument('--epochs', default=20, type=int)
+    parser.add_argument('--lr', default=1e-4, type=float) # 降低学习率，MIL通常需要较低LR
+    parser.add_argument('--weight_decay', default=1e-4, type=float)
+    parser.add_argument('--dataset_downsample', default=0.1, type=float, help='使用多少数据进行调试')
+    parser.add_argument('--log_dir', default='./runs/runs_abmil/', type=str)
+    args = parser.parse_args()
+
+    # 环境设置
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    utils.setup_runtime(seed=42) # 固定随机种子
+
+    print(f"使用设备: {device}")
+    print("初始化 TensorBoard...")
+    name = datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + \
+           "lr{}_Downsample{}".format(
+               args.lr, args.dataset_downsample,
+           )
+    writer = SummaryWriter(args.log_dir + name)
+
+    # 数据加载 (复用 dataset.py)
+    print("准备数据...")
+    ds_train_raw, ds_test_raw = gather_align_Img() # 使用原来的函数
     
-    # 初始化 TensorBoard Writer
-    # 日志将保存在 ./runs_abmil/seed_42_lr_0.0001/ 下
-    log_path = os.path.join(args.log_dir, f"seed_{args.seed}_lr_{args.lr}")
-    writer = SummaryWriter(log_dir=log_path)
-    print(f"Tensorboard log directory: {log_path}")
+    # 构建 DataSet
+    # 注意：return_bag=True，因为我们要测 MIL 性能
+    train_ds = DataSet_MIL(ds=ds_train_raw, downsample=args.dataset_downsample, return_bag=True)
+    val_ds = DataSet_MIL(ds=ds_test_raw, downsample=args.dataset_downsample, return_bag=True)
     
-    # 1. 准备数据
-    print("Loading Data...")
-    ds_train, ds_test = gather_align_Img() # 使用原来的数据读取函数
-    
-    # 构造 Dataset, 强制 return_bag=True
-    train_ds = DataSet_MIL(ds_train, downsample=args.downsample, transform=None, return_bag=True)
-    val_ds = DataSet_MIL(ds_test, downsample=args.downsample, transform=None, return_bag=True)
-    
-    # DataLoader
+    # 构建 DataLoader
+    # 注意：batch_size=1 是必须的，因为 Bag 大小不固定，不能堆叠
     train_loader = DataLoader(train_ds, batch_size=1, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=4)
     
-    print(f"Train Bags: {len(train_ds)}, Val Bags: {len(val_ds)}")
+    print(f"训练集大小: {len(train_ds)} Bags")
+    print(f"验证集大小: {len(val_ds)} Bags")
+
+    # 模型初始化
+    model = CleanABMIL().to(device)
     
-    # 2. 准备模型
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    # 优化器
+    # 建议使用 Adam 调试 MIL，它比 SGD 对学习率不那么敏感
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
-    print("Initializing Models...")
-    encoder = PretrainedResNet18_Encoder().to(device)
+    # 损失函数 (二分类交叉熵)
+    criterion = nn.BCELoss()
     
-    head = Bag_Classifier_Attention_Head(
-        num_classes=[2], 
-        init=True, 
-        input_feat_dim=512, 
-        withoutAtten=False 
-    ).to(device)
-    
-    # 3. 优化器
-    optimizer = optim.Adam([
-        {'params': encoder.parameters(), 'lr': args.lr * 0.1}, 
-        {'params': head.parameters(), 'lr': args.lr}
-    ], weight_decay=args.weight_decay)
-    
-    # 4. 训练循环
+    # 训练循环
     best_auc = 0.0
     for epoch in range(args.epochs):
-        # 传入 writer
-        loss, auc = train_one_epoch(encoder, head, train_loader, optimizer, device, epoch, writer)
+        print(f"\n--- Epoch {epoch+1}/{args.epochs} ---")
         
-        # 验证
-        if (epoch + 1) % 1 == 0:
-            # 传入 writer
-            val_auc = validate(encoder, head, val_loader, device, epoch, writer)
-            if val_auc > best_auc:
-                best_auc = val_auc
-                print(f"*** New Best AUC: {best_auc:.4f} ***")
-    
-    # 关闭 writer
+        train_loss, train_auc = train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, writer)
+        val_auc = validate(model, val_loader, criterion, device, epoch, writer)
+        
+        # 保存最佳模型
+        if val_auc > best_auc:
+            best_auc = val_auc
+            torch.save(model.state_dict(), os.path.join(args.log_dir, 'best_abmil.pth'))
+            print(f"*** 保存最佳模型 (AUC: {best_auc:.4f}) ***")
+
     writer.close()
+    print("测试结束。")
 
 if __name__ == '__main__':
     main()
