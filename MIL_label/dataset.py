@@ -254,7 +254,8 @@ class DataSet_MIL(torch.utils.data.Dataset):
                 raise
             if self.patch_corresponding_slide_index[idx_patch_from_slide_i].max() != self.patch_corresponding_slide_index[idx_patch_from_slide_i].min():
                 raise
-            return bag, [patch_labels, slide_label, slide_index, slide_name], index
+            # 将 numpy 数组转换为 torch tensor，确保是 Long 类型以便作为索引使用
+            return bag, [patch_labels, slide_label, slide_index, slide_name], torch.from_numpy(idx_patch_from_slide_i).long()
         
         else:
             # --- 普通模式 (Instance) ---

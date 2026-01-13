@@ -18,6 +18,9 @@ from tqdm import tqdm
 import datetime
 from tensorboardX import SummaryWriter
 
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score, accuracy_score
+
 import utils
 
 from dataset import DataSet_MIL, gather_align_Img
@@ -85,7 +88,7 @@ class Optimizer:
             loss_student = 0.0 # 默认为 0，如果本 Epoch 不训练 Student
             student_test_auc = 0.0
 
-            if (epoch+1) % self.stuOptPeriod == 0:
+            if (epoch+1) > self.stuOptPeriod:
                 loss_student = self.optimize_student(epoch)
                 torch.cuda.empty_cache()  # <--- 清理碎片
                 student_test_auc = self.evaluate_student(epoch)
@@ -257,141 +260,141 @@ class Optimizer:
         return epoch_avg_loss
     
     
-    def optimize_student(self, epoch):
-        """
-        Student训练
-        利用 Teacher 生成的 Attention Score 作为伪标签 (Pseudo Label)，训练 Student 对单张切片进行分类。
-        """
+    # def optimize_student(self, epoch):
+    #     """
+    #     Student训练
+    #     利用 Teacher 生成的 Attention Score 作为伪标签 (Pseudo Label)，训练 Student 对单张切片进行分类。
+    #     """
 
-        for model_teacherHead_i in self.model_teacherHead:
-            model_teacherHead_i.eval() # TODO: 源码为train()，感觉学生训练时应是eval()
-            # model_teacherHead_i.train()
-        self.model_encoder.train()
-        self.model_studentHead.train()
+    #     for model_teacherHead_i in self.model_teacherHead:
+    #         model_teacherHead_i.eval() # TODO: 源码为train()，感觉学生训练时应是eval()
+    #         # model_teacherHead_i.train()
+    #     self.model_encoder.train()
+    #     self.model_studentHead.train()
 
-        # data shape: [Batch_Size, C, H, W]
-        loader = self.train_instanceloader
+    #     # data shape: [Batch_Size, C, H, W]
+    #     loader = self.train_instanceloader
 
-        # 初始化记录张量
-        patch_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)  # only for patch-label available dataset
-        patch_label_pred = torch.zeros([loader.dataset.__len__(), 1]).float().to(self.dev)
-        bag_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
-        patch_corresponding_slide_idx = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
+    #     # 初始化记录张量
+    #     patch_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)  # only for patch-label available dataset
+    #     patch_label_pred = torch.zeros([loader.dataset.__len__(), 1]).float().to(self.dev)
+    #     bag_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
+    #     patch_corresponding_slide_idx = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
 
-        epoch_loss_sum = 0.0
+    #     epoch_loss_sum = 0.0
         
-        for iter, (data, label, selected) in enumerate(tqdm(loader, desc="Student Training")):
-            for i, j in enumerate(label):
-                if torch.is_tensor(j):
-                    label[i] = j.to(self.dev)
-            selected = selected.squeeze(0)
-            niter = epoch * len(loader) + iter
+    #     for iter, (data, label, selected) in enumerate(tqdm(loader, desc="Student Training")):
+    #         for i, j in enumerate(label):
+    #             if torch.is_tensor(j):
+    #                 label[i] = j.to(self.dev)
+    #         selected = selected.squeeze(0)
+    #         niter = epoch * len(loader) + iter
 
-            data = data.to(self.dev)
+    #         data = data.to(self.dev)
 
-            # --- teacher 生成伪标签 ---
-            # 提取特征
-            feat = self.model_encoder(data)
-            # 生成伪标签
-            pseudo_instance_label = torch.zeros_like(label[0]).float()
-            with torch.no_grad():
-                for i in range(self.num_teacher):
-                    _, instance_attn_score = self.model_teacherHead[i](feat)
+    #         # --- teacher 生成伪标签 ---
+    #         # 提取特征
+    #         feat = self.model_encoder(data)
+    #         # 生成伪标签
+    #         pseudo_instance_label = torch.zeros_like(label[0]).float()
+    #         with torch.no_grad():
+    #             for i in range(self.num_teacher):
+    #                 _, instance_attn_score = self.model_teacherHead[i](feat)
 
-                    # 归一化并融合：
-                    # 1. norm_AttnScore2Prob: 利用 optimize_teacher 中统计的 min/max 将分数映射到 [0, 1]
-                    # 2. clamp: 截断数值防止 log(0)
-                    # 3. 加权平均多个 Teacher 的结果
-                    # 归一化每个教师的分数
-                    normed = self.norm_AttnScore2Prob(instance_attn_score.squeeze(0), idx_teacher=i).clamp(1e-5, 1-1e-5)
+    #                 # 归一化并融合：
+    #                 # 1. norm_AttnScore2Prob: 利用 optimize_teacher 中统计的 min/max 将分数映射到 [0, 1]
+    #                 # 2. clamp: 截断数值防止 log(0)
+    #                 # 3. 加权平均多个 Teacher 的结果
+    #                 # 归一化每个教师的分数
+    #                 normed = self.norm_AttnScore2Prob(instance_attn_score.squeeze(0), idx_teacher=i).clamp(1e-5, 1-1e-5)
 
-                    # === 新增打印：每个教师的原始分数统计 ===
-                    print(f"[Debug Epoch {epoch} Iter {iter}] Teacher {i} raw min/max/mean: "
-                        f"{instance_attn_score.min().item():.4f} / {instance_attn_score.max().item():.4f} / {instance_attn_score.mean().item():.4f}")
+    #                 # === 新增打印：每个教师的原始分数统计 ===
+    #                 print(f"[Debug Epoch {epoch} Iter {iter}] Teacher {i} raw min/max/mean: "
+    #                     f"{instance_attn_score.min().item():.4f} / {instance_attn_score.max().item():.4f} / {instance_attn_score.mean().item():.4f}")
 
-                    print(f"[Debug Epoch {epoch} Iter {iter}] Teacher {i} normed mean: {normed.mean().item():.4f}")
-                    ####################
+    #                 print(f"[Debug Epoch {epoch} Iter {iter}] Teacher {i} normed mean: {normed.mean().item():.4f}")
+    #                 ####################
                     
-                    pseudo_instance_label += self.teacher_pseudo_label_merge_weight[i] * \
-                        self.norm_AttnScore2Prob(instance_attn_score, idx_teacher=i).clamp(min=1e-5, max=1-1e-5).squeeze(0)
+    #                 pseudo_instance_label += self.teacher_pseudo_label_merge_weight[i] * \
+    #                     self.norm_AttnScore2Prob(instance_attn_score, idx_teacher=i).clamp(min=1e-5, max=1-1e-5).squeeze(0)
 
-            # === 新增打印：融合后的伪标签统计 ===
-            print(f"[Debug Epoch {epoch} Iter {iter}] Pseudo label mean: {pseudo_instance_label.mean().item():.4f} | "
-                f"min: {pseudo_instance_label.min().item():.4f} | max: {pseudo_instance_label.max().item():.4f}")
+    #         # === 新增打印：融合后的伪标签统计 ===
+    #         print(f"[Debug Epoch {epoch} Iter {iter}] Pseudo label mean: {pseudo_instance_label.mean().item():.4f} | "
+    #             f"min: {pseudo_instance_label.min().item():.4f} | max: {pseudo_instance_label.max().item():.4f}")
 
-            # === 新增打印：学生预测概率统计 ===
-            prediction = self.model_studentHead(feat)  # [B, 2]
-            pred_prob_pos = torch.softmax(prediction, dim=1)[:, 1]
-            print(f"[Debug Epoch {epoch} Iter {iter}] Student pred pos prob mean: {pred_prob_pos.mean().item():.4f}")
-            ######################    
+    #         # === 新增打印：学生预测概率统计 ===
+    #         prediction = self.model_studentHead(feat)  # [B, 2]
+    #         pred_prob_pos = torch.softmax(prediction, dim=1)[:, 1]
+    #         print(f"[Debug Epoch {epoch} Iter {iter}] Student pred pos prob mean: {pred_prob_pos.mean().item():.4f}")
+    #         ######################    
             
-            # --- 关键策略：Hard Negative Mining (硬负样本修正) ---
-            # 利用先验知识：如果一个包是阴性(0)，那么它里面所有的切片一定都是阴性(0)。
-            # 强制将这些样本的伪标签设为 0，纠正 Teacher 可能的误判 (False Positive)。
-            pseudo_instance_label[label[1]==0] = 0
+    #         # --- 关键策略：Hard Negative Mining (硬负样本修正) ---
+    #         # 利用先验知识：如果一个包是阴性(0)，那么它里面所有的切片一定都是阴性(0)。
+    #         # 强制将这些样本的伪标签设为 0，纠正 Teacher 可能的误判 (False Positive)。
+    #         pseudo_instance_label[label[1]==0] = 0
 
-            # --- Student 训练 ---
-            # 输入同样的特征，输出预测标签
-            patch_prediction = self.model_studentHead(feat)
-            patch_prediction = torch.softmax(patch_prediction, dim=1)
+    #         # --- Student 训练 ---
+    #         # 输入同样的特征，输出预测标签
+    #         patch_prediction = self.model_studentHead(feat)
+    #         patch_prediction = torch.softmax(patch_prediction, dim=1)
 
-            loss_student = self.model_studentHead.get_loss(
-                prediction=patch_prediction, 
-                target=pseudo_instance_label, 
-                neg_weight=self.stu_loss_weight_neg
-            )
+    #         loss_student = self.model_studentHead.get_loss(
+    #             prediction=patch_prediction, 
+    #             target=pseudo_instance_label, 
+    #             neg_weight=self.stu_loss_weight_neg
+    #         )
 
-            # --- 反向传播与参数更新 ---
-            self.optimizer_encoder.zero_grad()
-            self.optimizer_studentHead.zero_grad()
+    #         # --- 反向传播与参数更新 ---
+    #         self.optimizer_encoder.zero_grad()
+    #         self.optimizer_studentHead.zero_grad()
 
-            loss_student.backward()
+    #         loss_student.backward()
 
-            # --- 【新增】梯度裁剪 ---
-            torch.nn.utils.clip_grad_norm_(self.model_encoder.parameters(), max_norm=5.0)
-            torch.nn.utils.clip_grad_norm_(self.model_studentHead.parameters(), max_norm=5.0)
-            # -----------------------
+    #         # --- 【新增】梯度裁剪 ---
+    #         torch.nn.utils.clip_grad_norm_(self.model_encoder.parameters(), max_norm=5.0)
+    #         torch.nn.utils.clip_grad_norm_(self.model_studentHead.parameters(), max_norm=5.0)
+    #         # -----------------------
 
-            epoch_loss_sum += loss_student.item()
+    #         epoch_loss_sum += loss_student.item()
 
-            self.optimizer_encoder.step()
-            self.optimizer_studentHead.step()
+    #         self.optimizer_encoder.step()
+    #         self.optimizer_studentHead.step()
 
-            # 记录数据用于评估
-            patch_corresponding_slide_idx[selected, 0] = label[2]
-            patch_label_pred[selected, 0] = patch_prediction.detach()[:, 1]
-            patch_label_gt[selected, 0] = label[0]
-            bag_label_gt[selected, 0] = label[1]
-            if niter % self.log_period == 0:
-                self.writer.add_scalar('train_loss_Student', loss_student.item(), niter)
+    #         # 记录数据用于评估
+    #         patch_corresponding_slide_idx[selected, 0] = label[2]
+    #         patch_label_pred[selected, 0] = patch_prediction.detach()[:, 1]
+    #         patch_label_gt[selected, 0] = label[0]
+    #         bag_label_gt[selected, 0] = label[1]
+    #         if niter % self.log_period == 0:
+    #             self.writer.add_scalar('train_loss_Student', loss_student.item(), niter)
 
-        # 4. 计算 Student 的 Bag-Level AUC
-        # 一个 Bag 的得分为其包含的所有切片中得分最高的那一个。
-        bag_label_gt_coarse = []
-        bag_label_prediction = []
+    #     # 4. 计算 Student 的 Bag-Level AUC
+    #     # 一个 Bag 的得分为其包含的所有切片中得分最高的那一个。
+    #     bag_label_gt_coarse = []
+    #     bag_label_prediction = []
 
-        # 获取所有唯一的 Bag ID
-        available_bag_idx = patch_corresponding_slide_idx.unique()
-        for bag_idx_i in available_bag_idx:
-            # 找到属于当前 Bag 的所有切片索引
-            idx_same_bag_i = torch.where(patch_corresponding_slide_idx == bag_idx_i)
-            if bag_label_gt[idx_same_bag_i].max() != bag_label_gt[idx_same_bag_i].max():
-                raise
-            # 记录 Bag 真实标签
-            bag_label_gt_coarse.append(bag_label_gt[idx_same_bag_i].max())
-            # 记录 Bag 预测分 (取最大值)
-            bag_label_prediction.append(patch_label_pred[idx_same_bag_i].max())
+    #     # 获取所有唯一的 Bag ID
+    #     available_bag_idx = patch_corresponding_slide_idx.unique()
+    #     for bag_idx_i in available_bag_idx:
+    #         # 找到属于当前 Bag 的所有切片索引
+    #         idx_same_bag_i = torch.where(patch_corresponding_slide_idx == bag_idx_i)
+    #         if bag_label_gt[idx_same_bag_i].max() != bag_label_gt[idx_same_bag_i].max():
+    #             raise
+    #         # 记录 Bag 真实标签
+    #         bag_label_gt_coarse.append(bag_label_gt[idx_same_bag_i].max())
+    #         # 记录 Bag 预测分 (取最大值)
+    #         bag_label_prediction.append(patch_label_pred[idx_same_bag_i].max())
         
-        bag_label_gt_coarse = torch.tensor(bag_label_gt_coarse)
-        bag_label_prediction = torch.tensor(bag_label_prediction)
+    #     bag_label_gt_coarse = torch.tensor(bag_label_gt_coarse)
+    #     bag_label_prediction = torch.tensor(bag_label_prediction)
         
-        # 计算并记录 AUC
-        bag_auc_ByStudent = utils.cal_auc(bag_label_gt_coarse.reshape(-1), bag_label_prediction.reshape(-1))
-        self.writer.add_scalar('train_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
+    #     # 计算并记录 AUC
+    #     bag_auc_ByStudent = utils.cal_auc(bag_label_gt_coarse.reshape(-1), bag_label_prediction.reshape(-1))
+    #     self.writer.add_scalar('train_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
 
-        epoch_avg_loss = epoch_loss_sum / len(loader)
-        print(pseudo_instance_label.mean(), pseudo_instance_label.max())
-        return epoch_avg_loss
+    #     epoch_avg_loss = epoch_loss_sum / len(loader)
+    #     print(pseudo_instance_label.mean(), pseudo_instance_label.max())
+    #     return epoch_avg_loss
 
     def evaluate_teacher(self, epoch):
         """评估 Teacher 的性能"""
@@ -447,65 +450,267 @@ class Optimizer:
             teacher_aucs.append(bag_auc_ByTeacher_withAttnScore)
         return teacher_aucs
     
+    def optimize_student(self, epoch):
+        """
+        Student 训练：利用 Teacher 的 Attention Score 作为 Soft Label
+        集成：Loss记录、梯度裁剪、Hard Negative Mining
+        """
+        # 切换模式：Teacher 评估模式 (提供稳定伪标签), Student 训练模式
+        for model_teacherHead_i in self.model_teacherHead:
+            model_teacherHead_i.eval() 
+        self.model_encoder.train()
+        self.model_studentHead.train()
+
+        loader = self.train_instanceloader
+        epoch_loss_sum = 0.0
+        
+        # 用于计算 Training 过程中的简单指标 (仅供参考)
+        train_probs = []
+        train_targets = []
+
+        # 进度条
+        pbar = tqdm(loader, desc=f"Student Training (Epoch {epoch})")
+        
+        for iter, (data, label, selected) in enumerate(pbar):
+            # 数据迁移
+            for i, j in enumerate(label):
+                if torch.is_tensor(j):
+                    label[i] = j.to(self.dev)
+            
+            data = data.to(self.dev)
+            # label[0]: patch_label (Usually unknown/0), label[1]: bag_label
+
+            # ------------------------------------------------------------------
+            # 1. 生成伪标签 (Pseudo Label Generation)
+            # ------------------------------------------------------------------
+            # 提取特征
+            feat = self.model_encoder(data)
+            
+            pseudo_instance_label = torch.zeros_like(label[0]).float()
+            
+            with torch.no_grad():
+                for i in range(self.num_teacher):
+                    # 获取 Teacher 的 Raw Attention Score
+                    _, instance_attn_score = self.model_teacherHead[i](feat)
+
+                    # 归一化 (Norm) -> 截断 (Clamp) -> 加权融合 (Merge)
+                    # norm_AttnScore2Prob 内部使用了 optimize_teacher 阶段统计的 min/max 参数
+                    normed_score = self.norm_AttnScore2Prob(instance_attn_score, idx_teacher=i)
+                    clamped_score = normed_score.clamp(min=1e-5, max=1-1e-5)
+                    
+                    pseudo_instance_label += self.teacher_pseudo_label_merge_weight[i] * clamped_score.squeeze(0)
+
+            # ------------------------------------------------------------------
+            # 2. Hard Negative Mining (关键步骤)
+            # ------------------------------------------------------------------
+            # 如果 Bag 是负的 (label[1]==0)，那么其中的所有 Patch 必须是负的。
+            # 忽略 Teacher 可能产生的错误高分，强制设为 0。
+            pseudo_instance_label[label[1]==0] = 0.0
+
+            # ------------------------------------------------------------------
+            # 3. Student 前向与反向传播
+            # ------------------------------------------------------------------
+            # Student 预测 (Logits) -> Softmax
+            patch_logits = self.model_studentHead(feat)
+            patch_prediction = torch.softmax(patch_logits, dim=1) # [B, 2]
+
+            # 计算 Loss (支持 Soft Label)
+            loss_student = self.model_studentHead.get_loss(
+                prediction=patch_prediction, 
+                target=pseudo_instance_label, 
+                neg_weight=self.stu_loss_weight_neg
+            )
+
+            self.optimizer_encoder.zero_grad()
+            self.optimizer_studentHead.zero_grad()
+            
+            loss_student.backward()
+
+            # 梯度裁剪 (防止梯度爆炸)
+            torch.nn.utils.clip_grad_norm_(self.model_encoder.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(self.model_studentHead.parameters(), max_norm=5.0)
+
+            self.optimizer_encoder.step()
+            self.optimizer_studentHead.step()
+
+            # ------------------------------------------------------------------
+            # 4. 记录日志
+            # ------------------------------------------------------------------
+            epoch_loss_sum += loss_student.item()
+            niter = epoch * len(loader) + iter
+            
+            if niter % self.log_period == 0:
+                self.writer.add_scalar('Train/Student_Step_Loss', loss_student.item(), niter)
+                # 记录伪标签的均值，观察 Teacher 是否“自信”
+                self.writer.add_scalar('Train/Pseudo_Label_Mean', pseudo_instance_label.mean().item(), niter)
+
+            # 收集少量数据用于计算 epoch 级粗略指标
+            train_probs.append(patch_prediction.detach()[:, 1].cpu())
+            train_targets.append(pseudo_instance_label.detach().cpu())
+
+        # 计算 Epoch 平均 Loss
+        epoch_avg_loss = epoch_loss_sum / len(loader)
+        self.writer.add_scalar('Train/Student_Epoch_Loss', epoch_avg_loss, epoch)
+
+        # 简单计算训练集上的拟合程度 (MSE)
+        train_probs = torch.cat(train_probs)
+        train_targets = torch.cat(train_targets)
+        train_mse = torch.mean((train_probs - train_targets) ** 2)
+        print(f"  [Student Train] Loss: {epoch_avg_loss:.4f} | Pseudo-Label Fitting MSE: {train_mse:.4f}")
+
+        return epoch_avg_loss
 
     def evaluate_student(self, epoch):
-        """评估 Student 的性能"""
+        """
+        Student 评估：
+        1. Instance 推理
+        2. Bag 聚合 (Max Pooling)
+        3. 计算 AUC, Accuracy, AP
+        4. 绘制 ROC 和 PR 曲线
+        """
         self.model_encoder.eval()
-        for model_teacherHead_i in self.model_teacherHead:
-            model_teacherHead_i.eval()
         self.model_studentHead.eval()
         
         loader = self.test_instanceloader
 
-        # 初始化记录张量
-        patch_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)  # only for patch-label available dataset
-        patch_label_pred = torch.zeros([loader.dataset.__len__(), 1]).float().to(self.dev)
-        bag_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
-        patch_corresponding_slide_idx = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
+        # 使用 CPU Tensor 缓存所有结果，防止显存溢出
+        all_patch_preds = torch.zeros([len(loader.dataset)], dtype=torch.float32)
+        all_bag_labels = torch.zeros([len(loader.dataset)], dtype=torch.long)
+        all_slide_idxs = torch.zeros([len(loader.dataset)], dtype=torch.long)
 
-        for iter, (data, label, selected) in enumerate(tqdm(loader, desc='Student evaluating')):
-            for i, j in enumerate(label):
-                if torch.is_tensor(j):
-                    label[i] = j.to(self.dev)
-            selected = selected.squeeze(0)
-            niter = epoch * len(loader) + iter
+        # 1. 推理循环
+        with torch.no_grad():
+            for iter, (data, label, selected) in enumerate(tqdm(loader, desc='Student Evaluating')):
+                # 标签搬运
+                bag_lbl = label[1] # Bag Label
+                slide_id = label[2] # Slide ID
+                
+                selected = selected.squeeze(0)
+                data = data.to(self.dev)
 
-            data = data.to(self.dev)
-
-            # --- Student 推理 ---
-            with torch.no_grad():
+                # Student 前向
                 feat = self.model_encoder(data)
-                patch_prediction = self.model_studentHead(feat)
-                patch_prediction = torch.softmax(patch_prediction, dim=1)
+                logits = self.model_studentHead(feat)
+                probs = torch.softmax(logits, dim=1)[:, 1] # 取正类概率
 
-            # 记录结果 (通过 selected 索引填入大张量的对应位置)
-            patch_corresponding_slide_idx[selected, 0] = label[2]
-            patch_label_pred[selected, 0] = patch_prediction.detach()[:, 1]
-            patch_label_gt[selected, 0] = label[0]
-            bag_label_gt[selected, 0] = label[1]
+                # 存入缓存 (利用 selected 索引放回正确位置)
+                all_patch_preds[selected] = probs.cpu()
+                all_bag_labels[selected] = bag_lbl.cpu().squeeze()
+                all_slide_idxs[selected] = slide_id.cpu().squeeze()
+
+        # 2. Bag 聚合 (Aggregation) - Max Pooling
+        # 只有通过聚合后的 Bag 分数才能和 Bag Label 进行计算 AUC
+        unique_bag_ids = all_slide_idxs.unique()
         
-        # 计算 Bag-Level AUC
-        bag_label_gt_coarse = []
-        bag_label_prediction = []
-        available_bag_idx = patch_corresponding_slide_idx.unique()
+        bag_preds_aggregated = []
+        bag_labels_aggregated = []
 
-        # Max Pooling 聚合策略
-        for bag_idx_i in available_bag_idx:
-            idx_same_bag_i = torch.where(patch_corresponding_slide_idx == bag_idx_i)
-            # 校验数据一致性
-            if bag_label_gt[idx_same_bag_i].max() != bag_label_gt[idx_same_bag_i].max():
-                raise
-            bag_label_gt_coarse.append(bag_label_gt[idx_same_bag_i].max())
-            bag_label_prediction.append(patch_label_pred[idx_same_bag_i].max())
+        for bag_id in unique_bag_ids:
+            # 找到属于当前 Bag 的所有 Patch 的索引
+            indices = torch.where(all_slide_idxs == bag_id)[0]
+            
+            # Max Pooling: 取该包内最高的 Patch 分数作为 Bag 分数
+            bag_score = all_patch_preds[indices].max()
+            bag_gt = all_bag_labels[indices][0] # 只要取一个，因为同一个包内标签相同
 
-        bag_label_gt_coarse = torch.tensor(bag_label_gt_coarse)
-        bag_label_prediction = torch.tensor(bag_label_prediction)
+            bag_preds_aggregated.append(bag_score.item())
+            bag_labels_aggregated.append(bag_gt.item())
 
-        # 计算并记录 AUC
-        bag_auc_ByStudent = utils.cal_auc(bag_label_gt_coarse.reshape(-1), bag_label_prediction.reshape(-1))
-        self.writer.add_scalar('test_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
+        # 转为 Numpy 数组供 sklearn 使用
+        y_true = np.array(bag_labels_aggregated)
+        y_score = np.array(bag_preds_aggregated)
+        y_pred = (y_score > 0.5).astype(int) # 用于计算 Accuracy，阈值设为 0.5
 
-        return bag_auc_ByStudent
+        # 3. 计算指标
+        # Accuracy
+        acc = accuracy_score(y_true, y_pred)
+        
+        # AUC
+        fpr, tpr, _ = roc_curve(y_true, y_score)
+        roc_auc = auc(fpr, tpr)
+        
+        # AP (Average Precision)
+        precision, recall, _ = precision_recall_curve(y_true, y_score)
+        ap = average_precision_score(y_true, y_score)
+
+        # 4. TensorBoard 记录
+        self.writer.add_scalar('Eval/Student_Acc', acc, epoch)
+        self.writer.add_scalar('Eval/Student_AUC', roc_auc, epoch)
+        self.writer.add_scalar('Eval/Student_AP', ap, epoch)
+        # 为了兼容旧代码的逻辑，保留这个特定名称的记录
+        self.writer.add_scalar('test_bag_AUC_byStudent', roc_auc, epoch) 
+
+        # 5. 绘制并记录曲线
+        # ROC Curve
+        fig_roc = plot_curve(fpr, tpr, f'Student ROC (Epoch {epoch}, AUC={roc_auc:.4f})', 'FPR', 'TPR')
+        self.writer.add_figure('Curves/Student_ROC', fig_roc, epoch)
+        
+        # PR Curve
+        fig_pr = plot_curve(recall, precision, f'Student PR (Epoch {epoch}, AP={ap:.4f})', 'Recall', 'Precision')
+        self.writer.add_figure('Curves/Student_PR', fig_pr, epoch)
+
+        print(f"  [Student Eval] Acc: {acc:.4f} | AUC: {roc_auc:.4f} | AP: {ap:.4f}")
+
+        return roc_auc
+
+    # def evaluate_student(self, epoch):
+    #     """评估 Student 的性能"""
+    #     self.model_encoder.eval()
+    #     for model_teacherHead_i in self.model_teacherHead:
+    #         model_teacherHead_i.eval()
+    #     self.model_studentHead.eval()
+        
+    #     loader = self.test_instanceloader
+
+    #     # 初始化记录张量
+    #     patch_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)  # only for patch-label available dataset
+    #     patch_label_pred = torch.zeros([loader.dataset.__len__(), 1]).float().to(self.dev)
+    #     bag_label_gt = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
+    #     patch_corresponding_slide_idx = torch.zeros([loader.dataset.__len__(), 1]).long().to(self.dev)
+
+    #     for iter, (data, label, selected) in enumerate(tqdm(loader, desc='Student evaluating')):
+    #         for i, j in enumerate(label):
+    #             if torch.is_tensor(j):
+    #                 label[i] = j.to(self.dev)
+    #         selected = selected.squeeze(0)
+    #         niter = epoch * len(loader) + iter
+
+    #         data = data.to(self.dev)
+
+    #         # --- Student 推理 ---
+    #         with torch.no_grad():
+    #             feat = self.model_encoder(data)
+    #             patch_prediction = self.model_studentHead(feat)
+    #             patch_prediction = torch.softmax(patch_prediction, dim=1)
+
+    #         # 记录结果 (通过 selected 索引填入大张量的对应位置)
+    #         patch_corresponding_slide_idx[selected, 0] = label[2]
+    #         patch_label_pred[selected, 0] = patch_prediction.detach()[:, 1]
+    #         patch_label_gt[selected, 0] = label[0]
+    #         bag_label_gt[selected, 0] = label[1]
+        
+    #     # 计算 Bag-Level AUC
+    #     bag_label_gt_coarse = []
+    #     bag_label_prediction = []
+    #     available_bag_idx = patch_corresponding_slide_idx.unique()
+
+    #     # Max Pooling 聚合策略
+    #     for bag_idx_i in available_bag_idx:
+    #         idx_same_bag_i = torch.where(patch_corresponding_slide_idx == bag_idx_i)
+    #         # 校验数据一致性
+    #         if bag_label_gt[idx_same_bag_i].max() != bag_label_gt[idx_same_bag_i].max():
+    #             raise
+    #         bag_label_gt_coarse.append(bag_label_gt[idx_same_bag_i].max())
+    #         bag_label_prediction.append(patch_label_pred[idx_same_bag_i].max())
+
+    #     bag_label_gt_coarse = torch.tensor(bag_label_gt_coarse)
+    #     bag_label_prediction = torch.tensor(bag_label_prediction)
+
+    #     # 计算并记录 AUC
+    #     bag_auc_ByStudent = utils.cal_auc(bag_label_gt_coarse.reshape(-1), bag_label_prediction.reshape(-1))
+    #     self.writer.add_scalar('test_bag_AUC_byStudent', bag_auc_ByStudent, epoch)
+
+    #     return bag_auc_ByStudent
 
     # def norm_AttnScore2Prob(self, attn_score, idx_teacher):
     #     """辅助函数：将 Teacher 的 Raw Attention Score 归一化为 0-1 的概率值"""
@@ -549,13 +754,22 @@ class Optimizer:
                 return prob
         
         return attn_score
-    
+
+def plot_curve(x, y, title, x_label, y_label):
+    fig = plt.figure(figsize=(6, 6))
+    plt.plot(x, y)
+    plt.title(title)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.grid(True)
+    return fig
+
 def get_parser():
     parser = argparse.ArgumentParser(description='PyTorch Implementation of Self-Label')
     # optimizer
     parser.add_argument('--epochs', default=20, type=int, help='number of epochs')
     parser.add_argument('--batch_size', default=64, type=int, help='batch size (default: 256)')
-    parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate (default: 0.05)')
+    parser.add_argument('--lr', default=0.0001, type=float, help='initial learning rate (default: 0.05)')
     parser.add_argument('--lrdrop', default=1000, type=int, help='multiply LR by 0.5 every (default: 150 epochs)')
     parser.add_argument('--wd', default=-5, type=float, help='weight decay pow (default: (-5)')
     parser.add_argument('--dtype', default='f64', choices=['f64', 'f32'], type=str, help='SK-algo dtype (default: f64)')
@@ -578,7 +792,7 @@ def get_parser():
     parser.add_argument('--log_iter', default=200, type=int, help='log every x-th batch (default: 200)')
     parser.add_argument('--seed', default=10, type=int, help='random seed')
 
-    parser.add_argument('--dataset_downsampling', default=0.05, type=float, help='sampling the dataset for Debug')
+    parser.add_argument('--dataset_downsampling', default=0.8, type=float, help='sampling the dataset for Debug')
 
     parser.add_argument('--PLPostProcessMethod', default='NegGuide', type=str,
                         help='Post-processing method of Attention Scores to build Pseudo Lables',
@@ -586,9 +800,9 @@ def get_parser():
     parser.add_argument('--StuFilterType', default='PseudoBag_85_15_2', type=str,
                         help='Type of using Student Prediction to imporve Teacher '
                              '[ReplaceAS, FilterNegInstance_Top95, FilterNegInstance_ThreProb95, PseudoBag_88_20]')
-    parser.add_argument('--smoothE', default=100, type=int, help='num of epoch to apply StuFilter')
+    parser.add_argument('--smoothE', default=15, type=int, help='num of epoch to apply StuFilter')
     parser.add_argument('--stu_loss_weight_neg', default=0.5, type=float, help='weight of neg instances in stu training')
-    parser.add_argument('--stuOptPeriod', default=1, type=int, help='period of stu optimization')
+    parser.add_argument('--stuOptPeriod', default=5, type=int, help='period of stu optimization')
     # parser.add_argument('--TeacherLossWeight', nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0', required=True)
     # parser.add_argument('--PLMergeWeight', nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5', required=True)
     parser.add_argument('--teacher_loss_weight', default=[1.0, 1.0], nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0')

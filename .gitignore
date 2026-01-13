@@ -46,3 +46,5 @@ runs/
 # 模型权重
 checkpoints/
 *.pth
+
+debug.py

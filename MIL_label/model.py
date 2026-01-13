@@ -209,19 +209,29 @@ class TransMIL_With_Attn(nn.Module):
         
         # 6. TransLayer 2 (Extract Attention Here!)
         # We capture the attention of the CLS token attending to all instances
-        h, attn_scores = self.layer2(h, return_attn=True) 
+        h = self.layer2(h) 
         
-        # attn_scores shape: [B, 1+N_padded] (CLS + Instances)
-        # We only care about CLS attending to Instances, not CLS attending to CLS or padding
-        # Remove CLS (index 0) and remove padding
-        valid_attn = attn_scores[:, 1:(1+H)] 
-        valid_attn = torch.softmax(valid_attn, dim=-1)
+        # 对所有 Token 进行 LayerNorm
+        h_norm = self.norm(h) 
         
-        # 7. Classification
-        h = self.norm(h)[:, 0] # Take CLS token
-        logits = self._fc2(h) # [B, n_classes]
+        # --- A. Bag Level Prediction (基于 CLS Token) ---
+        h_cls = h_norm[:, 0]
+        bag_logits = self._fc2(h_cls) # [B, n_classes]
+
+        # --- B. Instance Level Prediction (基于 Patch Tokens) ---
+        # 还原：去掉第0个 CLS token，并截取原始长度 H (去掉 padding)
+        h_patches = h_norm[:, 1:(1+H)] # [B, N_original, mDim]
         
-        return logits, valid_attn
+        # 关键操作：将同一个分类器 _fc2 应用于每个 Patch 的特征上
+        # 逻辑：TransMIL 的 Encoder 已经混入了上下文信息，Patch Token 此时包含了“该 Patch 是否致病”的语义
+        instance_logits = self._fc2(h_patches) # [B, N, n_classes]
+        
+        # Softmax 归一化：在类别维度 (dim=-1) 进行，保证 P(Pos) + P(Neg) = 1
+        # 取出正类 (Class 1) 的概率
+        instance_probs = torch.softmax(instance_logits, dim=-1)[:, :, 1] # [B, N]
+        
+        # 返回：包预测 logits, 实例预测概率 (0~1)
+        return bag_logits, instance_probs
 
 # ==========================================
 # 3. Student Head (Simple MLP)
@@ -256,10 +266,12 @@ class map_transmil(nn.Module):
         self.criterion = nn.CrossEntropyLoss()
 
     def forward(self, x):
-        # x: [1, N, 512] (After ResNet feature extraction, unsqueezed)
-        # TransMIL expects [B, N, Dim]
-        bag_logits, attn_scores = self.model(x)
-        return bag_logits, attn_scores
+        # x: [1, N, 512]
+        # output: 
+        #   bag_logits: [1, n_classes]
+        #   instance_probs: [1, N] (范围 0~1 的概率)
+        bag_logits, instance_probs = self.model(x)
+        return bag_logits, instance_probs
 
     def get_loss(self, bag_logits, bag_label):
         return self.criterion(bag_logits, bag_label)

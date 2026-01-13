@@ -334,42 +334,42 @@ class Bag_Classifier_Attention_Head(nn.Module):
             return x, torch.zeros_like(x), A, A_.squeeze(0)
         return x, 0, A
 
-    # def _initialize_weights(self):
-    #     for y, m in enumerate(self.modules()):
-    #         if isinstance(m, nn.Conv2d):
-    #             n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-    #             for i in range(m.out_channels):
-    #                 m.weight.data[i].normal_(0, math.sqrt(2. / n))
-    #             if m.bias is not None:
-    #                 m.bias.data.zero_()
-    #         elif isinstance(m, nn.BatchNorm2d):
-    #             m.weight.data.fill_(1)
-    #             m.bias.data.zero_()
-    #         elif isinstance(m, nn.Linear):
-    #             m.weight.data.normal_(0, 0.01)
-    #             m.bias.data.zero_()
-
     def _initialize_weights(self):
-        """
-        使用 Xavier 初始化代替原来的微小正态分布。
-        这对打破 Attention 的对称性至关重要。
-        """
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                # 使用 Xavier Normal 初始化权重
-                nn.init.xavier_normal_(m.weight)
+        for y, m in enumerate(self.modules()):
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                for i in range(m.out_channels):
+                    m.weight.data[i].normal_(0, math.sqrt(2. / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm1d):
-                # BN 层初始化为 1
+            elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
-            elif isinstance(m, nn.Conv2d):
-                # 尽管这个 Head 里没用到 Conv2d，保留以防万一
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    m.bias.data.zero_()
-        #nn.init.xavier_normal_(self.attention[2].weight, gain=10.0)
+            elif isinstance(m, nn.Linear):
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()
+
+    # def _initialize_weights(self):
+    #     """
+    #     使用 Xavier 初始化代替原来的微小正态分布。
+    #     这对打破 Attention 的对称性至关重要。
+    #     """
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Linear):
+    #             # 使用 Xavier Normal 初始化权重
+    #             nn.init.xavier_normal_(m.weight)
+    #             if m.bias is not None:
+    #                 m.bias.data.zero_()
+    #         elif isinstance(m, nn.BatchNorm1d):
+    #             # BN 层初始化为 1
+    #             m.weight.data.fill_(1)
+    #             m.bias.data.zero_()
+    #         elif isinstance(m, nn.Conv2d):
+    #             # 尽管这个 Head 里没用到 Conv2d，保留以防万一
+    #             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    #             if m.bias is not None:
+    #                 m.bias.data.zero_()
+    #     #nn.init.xavier_normal_(self.attention[2].weight, gain=10.0)
 
 # class Bag_Classifier_Attention_Head(nn.Module):
 #     def __init__(self, features=None, num_classes=[2], init=True, input_feat_dim=512):
@@ -468,37 +468,37 @@ class Bag_Classifier_DSMIL_Head(nn.Module):
         if init:
             self._initialize_weights()
 
-    # def _initialize_weights(self):
-    #     for y, m in enumerate(self.modules()):
-    #         if isinstance(m, nn.Conv2d):
-    #             n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-    #             for i in range(m.out_channels):
-    #                 m.weight.data[i].normal_(0, math.sqrt(2. / n))
-    #             if m.bias is not None:
-    #                 m.bias.data.zero_()
-    #         elif isinstance(m, nn.BatchNorm2d):
-    #             m.weight.data.fill_(1)
-    #             m.bias.data.zero_()
-    #         elif isinstance(m, nn.Linear):
-    #             m.weight.data.normal_(0, 0.01)
-    #             m.bias.data.zero_()
-
     def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                # Xavier 初始化
-                nn.init.xavier_normal_(m.weight)
+        for y, m in enumerate(self.modules()):
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                for i in range(m.out_channels):
+                    m.weight.data[i].normal_(0, math.sqrt(2. / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
-            elif isinstance(m, nn.Conv1d):
-                # 处理 DSMIL 中的 W_b 层
-                nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
-        #nn.init.xavier_normal_(self.W_0.weight, gain=5.0)
+            elif isinstance(m, nn.Linear):
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()
+
+    # def _initialize_weights(self):
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Linear):
+    #             # Xavier 初始化
+    #             nn.init.xavier_normal_(m.weight)
+    #             if m.bias is not None:
+    #                 m.bias.data.zero_()
+    #         elif isinstance(m, nn.Conv1d):
+    #             # 处理 DSMIL 中的 W_b 层
+    #             nn.init.xavier_normal_(m.weight)
+    #             if m.bias is not None:
+    #                 m.bias.data.zero_()
+    #         elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+    #             m.weight.data.fill_(1)
+    #             m.bias.data.zero_()
+    #     #nn.init.xavier_normal_(self.W_0.weight, gain=5.0)
 
     def forward(self, x, returnBeforeSoftMaxA=False, scores_replaceAS=None):
         # 0. 特征提取 f(x) -> H
@@ -595,31 +595,31 @@ class Instance_Classifier_Head(nn.Module):
                 return x_, x
         return x
 
-    # def _initialize_weights(self):
-    #     for y, m in enumerate(self.modules()):
-    #         if isinstance(m, nn.Conv2d):
-    #             n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-    #             for i in range(m.out_channels):
-    #                 m.weight.data[i].normal_(0, math.sqrt(2. / n))
-    #             if m.bias is not None:
-    #                 m.bias.data.zero_()
-    #         elif isinstance(m, nn.BatchNorm2d):
-    #             m.weight.data.fill_(1)
-    #             m.bias.data.zero_()
-    #         elif isinstance(m, nn.Linear):
-    #             m.weight.data.normal_(0, 0.01)
-    #             m.bias.data.zero_()
-
     def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                # Xavier Normal 初始化
-                nn.init.xavier_normal_(m.weight)
+        for y, m in enumerate(self.modules()):
+            if isinstance(m, nn.Conv2d):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+                for i in range(m.out_channels):
+                    m.weight.data[i].normal_(0, math.sqrt(2. / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
+            elif isinstance(m, nn.Linear):
+                m.weight.data.normal_(0, 0.01)
+                m.bias.data.zero_()
+
+    # def _initialize_weights(self):
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Linear):
+    #             # Xavier Normal 初始化
+    #             nn.init.xavier_normal_(m.weight)
+    #             if m.bias is not None:
+    #                 m.bias.data.zero_()
+    #         elif isinstance(m, nn.BatchNorm1d):
+    #             m.weight.data.fill_(1)
+    #             m.bias.data.zero_()
 
 class PretrainedResNet18_Encoder(nn.Module):
     def __init__(self):
