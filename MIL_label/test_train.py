@@ -785,16 +785,16 @@ def get_args():
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for Student training')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--seed', type=int, default=113)
+    parser.add_argument('--seed', type=int, default=114)
     parser.add_argument('--device_ids', type=str, default='0,1', help='GPU IDs, e.g., 0,1')
-    parser.add_argument('--downsample', type=float, default=1, help='Use subset of data')
+    parser.add_argument('--downsample', type=float, default=0.5, help='Use subset of data')
     parser.add_argument('--save_dir', type=str, default='./checkpoints/mmked_mil')
     parser.add_argument('--log_dir', type=str, default='./runs/mmked_mil')
     parser.add_argument('--teacher_ckpt', type=str, default='/home/zhaokaizhang/code/test_code/runs/runs_transmil/TRANSMIL_20260109-015353_seed206_split0.75_lr5e-05_ds0.9/best_model.pth', 
                         help='Path to pretrained Teacher (TransMIL) checkpoint. If None, train from scratch.')
     parser.add_argument('--split', default=0.75, type=float, help='训练集占比')
     parser.add_argument('--datasetnum',type=int, default=2, help='使用的数据集数量')
-    parser.add_argument('--warmup', type=int, default=0, help='先训练教师')
+    parser.add_argument('--warmup', type=int, default=7, help='先训练教师')
     return parser.parse_args()
 
 def main():

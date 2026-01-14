@@ -30,6 +30,7 @@ TestResults.xml
 # excel files
 *.xlsx
 *.csv
+*.txt
 # =========================
 # Python 缓存文件
 # =========================
