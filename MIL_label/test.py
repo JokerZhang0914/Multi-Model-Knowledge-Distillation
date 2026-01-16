@@ -1,5 +1,6 @@
 import argparse
 import os
+import yaml
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,6 +10,8 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 from model import PretrainedResNet18_Encoder, get_student
+import json
+from datetime import datetime
 
 class SingleImageDataset(Dataset):
     def __init__(self, max_id, start_id=101, transform=None):
@@ -154,6 +157,49 @@ def load_checkpoint(model, ckpt_path, device):
         print(f"    [Warning] Strict loading failed, trying non-strict. Error: {e}")
         model.load_state_dict(new_state_dict, strict=False)
 
+
+def save_test_results(
+    args,
+    metrics: dict,
+    extra_metrics: dict = None
+):
+    """
+    将测试结果追加写入 test_result/test_log.txt
+    """
+    # 1. 结果目录
+    result_dir = args.result_dir or "test_result"
+    os.makedirs(result_dir, exist_ok=True)
+
+    result_file = os.path.join(result_dir, "test_log.txt")
+
+    # 2. 时间戳
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 3. 配置（args -> dict，避免不可序列化对象）
+    args_dict = vars(args).copy()
+
+    # 4. 写入
+    with open(result_file, "a") as f:
+        f.write("\n" + "=" * 80 + "\n")
+        f.write(f"Test Time: {now}\n")
+        f.write("-" * 80 + "\n")
+
+        f.write("[Configuration]\n")
+        for k, v in args_dict.items():
+            f.write(f"{k}: {v}\n")
+
+        f.write("\n[Metrics]\n")
+        for k, v in metrics.items():
+            f.write(f"{k}: {v}\n")
+
+        if extra_metrics is not None:
+            f.write("\n[Extra Metrics]\n")
+            for k, v in extra_metrics.items():
+                f.write(f"{k}: {v}\n")
+
+        f.write("=" * 80 + "\n")
+
+
 # ==========================================
 # 2. 测试逻辑
 # ==========================================
@@ -266,6 +312,14 @@ def test(args):
     print("       Metrics at Fixed Recall = 0.8")
     print("="*40)
 
+    metrics = {
+    "AUC": float(auc),
+    "AP": float(ap),
+    "ACC": float(acc),
+    "F1": float(f1)
+    }
+
+
     # 1. 确保数据不为空且包含正例 (否则 recall 无意义)
     if np.sum(y_true) == 0:
         print("[Warning] No positive samples found. Cannot calculate Recall-based metrics.")
@@ -316,22 +370,71 @@ def test(args):
         print("-" * 20)
         print(f"Precision : {precision_at_80:.4f}")
         print(f"FPR       : {fpr_at_80:.4f}")
+
+        extra_metrics = {
+        "Recall_target": 0.8,
+        "Recall_actual": float(real_recall),
+        "Precision_at_Recall_0.8": float(precision_at_80),
+        "FPR_at_Recall_0.8": float(fpr_at_80),
+        "Threshold_at_Recall_0.8": float(fixed_threshold),
+        "TP": int(tp_80),
+        "FP": int(fp_80),
+        "FN": int(fn_80),
+        "TN": int(tn_80)
+        }
+
     
     print("="*40)
+    save_test_results(
+    args=args,
+    metrics=metrics,
+    extra_metrics=extra_metrics
+    )
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test Encoder + Student on Single Images")
-    
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Test Encoder + Student on Single Images"
+    )
+
+    # 配置文件
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/config/test_config.yaml',
+        help='Path to config yaml file'
+    )
+
     # 权重路径
-    parser.add_argument('--encoder_ckpt', type=str, required=True, help='Path to encoder_best.pth or encoder_latest.pth')
-    parser.add_argument('--student_ckpt', type=str, required=True, help='Path to student_best.pth or student_latest.pth')
-    
+    parser.add_argument('--encoder_ckpt', type=str, help='Path to encoder checkpoint')
+    parser.add_argument('--student_ckpt', type=str, help='Path to student checkpoint')
+
     # 其他参数
-    parser.add_argument('--batch_size', type=int, default=32, help='Inference batch size')
-    parser.add_argument('--gpu', type=int, default=0, help='GPU ID to use')
-    parser.add_argument('--start_id', type=int, default=101, help='Test up from folder n (min 101)')
-    parser.add_argument('--max_id', type=int, default=110, help='Test up to folder n (e.g. 105, max 160)')
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--start_id', type=int, default=101)
+    parser.add_argument('--max_id', type=int, default=110)
+    parser.add_argument('--result_dir', type=str, default='./MIL_label/result')
 
     args = parser.parse_args()
+
+    # 如果提供了 config，则用 config 覆盖默认参数
+    if args.config is not None:
+        assert os.path.exists(args.config), f"Config file not found: {args.config}"
+        with open(args.config, 'r') as f:
+            cfg = yaml.safe_load(f)
+
+        for k, v in cfg.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
+
+    # 必要参数检查
+    assert args.encoder_ckpt is not None, "encoder_ckpt is required"
+    assert args.student_ckpt is not None, "student_ckpt is required"
+
+    return args
+
+if __name__ == "__main__":
+
+    args = parse_args()
     
     test(args)

@@ -103,7 +103,7 @@ class Optimizer:
                  opt_encoder, opt_teacher, opt_student,
                  train_bag_loader, train_inst_loader,
                  test_bag_loader, test_inst_loader,
-                 writer, warmup, args):
+                 writer, warmup, save_dir, args):
         
         self.encoder = model_encoder
         self.teacher = model_teacher
@@ -112,6 +112,9 @@ class Optimizer:
         self.opt_encoder = opt_encoder
         self.opt_teacher = opt_teacher
         self.opt_student = opt_student
+        self.scheduler_encoder = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.opt_encoder, T_max=50, eta_min=1e-6  # T_max：周期，eta_min：最小学习率
+        )
         
         self.train_bag_loader = train_bag_loader
         self.train_inst_loader = train_inst_loader
@@ -119,16 +122,16 @@ class Optimizer:
         self.test_inst_loader = test_inst_loader
         
         self.writer = writer
+        self.save_dir = save_dir
         self.args = args
         self.warmup = warmup
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.afwarmup = self.args.afwarmup
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
         
-        # 统计 Teacher Attention 分数的极值，用于归一化
-        # 初始化为较大的反向值
-        self.attn_min = 0.0
-        self.attn_max = 1.0 
-        
-        self.best_auc = 0.0
+        self.best_auc = 0.0 # 保留原有
+        self.best_teacher_ap = 0.0  # 记录 Teacher 最佳 AP
+        self.best_student_ap = 0.0  # 记录 Student 最佳 AP
+        self.recent_checkpoints = [] # 用于管理最新的3个权重文件
 
         total_instances = len(train_inst_loader.dataset)
         self.pseudo_label_bank = torch.zeros(total_instances).float().to(self.device)
@@ -169,33 +172,74 @@ class Optimizer:
                 teacher_auc, teacher_ap = self.evaluate_teacher(epoch)
                 print(f"  > Teacher Loss: {loss_teacher:.4f} | Test AUC: {teacher_auc:.4f} | AP: {teacher_ap:.4f}")
                 
+                if teacher_ap > self.best_teacher_ap:
+                    self.best_teacher_ap = teacher_ap
+                    save_checkpoint({
+                        'epoch': epoch,
+                        'teacher': self.teacher.state_dict(),
+                        'best_ap': self.best_teacher_ap
+                    }, self.save_dir, 'teacher_best.pth')
             # ==========================================
             # 阶段 2: Student Distillation (只训练 Student)
             # ==========================================
             else:
                 # 【关键修改】：仅在刚进入 Distill 阶段的第一轮 (epoch == warmup) 生成一次伪标签
                 # 之后 Epoch 都不再更新，保持伪标签固定 (Static Pseudo Labels)
-                if epoch == self.warmup:
+                if epoch == self.warmup or epoch % self.warmup == 0:
                     print("  [Phase: Distillation Start] Generating Static Pseudo Labels (ONCE)...")
                     self.update_pseudo_labels()
                 else:
                     print("  [Phase: Distillation] Using Static Pseudo Labels (No Update)...")
                 
                 # 1. Train Student (Teacher 不再训练)
-                loss_student = self.optimize_student1(epoch)
+                loss_student = self.optimize_student(epoch)
                 
                 # 2. Evaluate Student
-                test_auc, test_ap, test_acc = self.evaluate_student1(epoch)
+                test_auc, test_ap, test_acc = self.evaluate_student(epoch)
                 print(f"  > Student Loss: {loss_student:.4f} | Test AUC: {test_auc:.4f}")
                 
                 # 保存最佳 Student
-                if test_auc > self.best_auc:
-                    self.best_auc = test_auc
+                if test_ap > self.best_student_ap and test_acc > 0.9 and epoch >= self.warmup + self.afwarmup:
+                    self.best_student_ap = test_ap
+                    # 保存 Student
                     save_checkpoint({
                         'epoch': epoch,
                         'state_dict': self.student.state_dict(),
-                        'best_auc': self.best_auc
-                    }, self.args.save_dir, 'student_best.pth')  
+                        'best_ap': self.best_student_ap,
+                        'acc': test_acc
+                    }, self.save_dir, 'student_best.pth')
+                    
+                    # 保存 Encoder
+                    save_checkpoint({
+                        'epoch': epoch,
+                        'state_dict': self.encoder.state_dict(),
+                        'best_ap': self.best_student_ap,
+                        'acc': test_acc
+                    }, self.save_dir, 'encoder_best.pth')  
+                # 每个 epoch 结束都覆盖保存，保证是 "latest"
+            
+            # 1. Save Encoder Latest
+            save_checkpoint({
+                'epoch': epoch,
+                'state_dict': self.encoder.state_dict(),
+                'optimizer': self.opt_encoder.state_dict()
+            }, self.save_dir, 'encoder_latest.pth')
+
+            # 2. Save Teacher Latest
+            save_checkpoint({
+                'epoch': epoch,
+                'state_dict': self.teacher.state_dict(),
+                'optimizer': self.opt_teacher.state_dict()
+            }, self.save_dir, 'teacher_latest.pth')
+
+            # 3. Save Student Latest
+            save_checkpoint({
+                'epoch': epoch,
+                'state_dict': self.student.state_dict(),
+                'optimizer': self.opt_student.state_dict()
+            }, self.save_dir, 'student_latest.pth')
+            
+            print(f"[*] Saved latest checkpoints for Epoch {epoch+1}")
 
     def update_pseudo_labels(self):
         """
@@ -356,89 +400,14 @@ class Optimizer:
         self.writer.add_scalar('Test/Teacher_AP', ap, epoch)
         
         return roc_auc, ap
-    
-    def optimize_student(self, epoch):
-        """
-        训练 Student (MLP) 使用 Teacher 的 Attention 作为伪标签
-        """
-        self.encoder.train()
-        self.student.train()
-        self.teacher.eval() # Teacher 固定用于生成标签
-        
-        total_loss = 0.0
-        
-        # Instance Loader: batch_size=64 (or user defined), returns [B, 3, H, W]
-        pbar = tqdm(self.train_inst_loader, desc="Train Student", leave=False)
-        
-        for batch_idx, (imgs, label_info, selected_indices) in enumerate(pbar):
-            imgs = imgs.to(self.device)
-            # label_info[0] is Patch Label (usually 0), label_info[1] is Bag Label
-            indices = selected_indices.long().to(self.device)
-            
-            self.opt_encoder.zero_grad()
-            self.opt_student.zero_grad()
-            
-            # 1. Feature Extraction
-            pseudo_labels = self.pseudo_label_bank[indices]
-            feats = self.encoder(imgs) # [B, 512]
-            
-            # # 2. Get Pseudo Labels from Teacher
-            # # Teacher needs Sequence Input: [1, B, 512] (treating the batch as a mini-bag)
-            # # 注意：这里我们将一个随机 batch 当作一个 bag 输入给 Teacher 来获取相对分数
-            # # 这种做法是合理的，因为我们希望 Student 学习的是"在这个集合中谁更重要"
-            # with torch.no_grad():
-            #     feats_seq = feats.unsqueeze(0)
-            #     if isinstance(self.teacher, nn.DataParallel):
-            #         _, attn_scores = self.teacher.module(feats_seq)
-            #     else:
-            #         _, attn_scores = self.teacher(feats_seq)
-                
-            #     # attn_scores: [1, B] -> [B]
-            #     attn_scores = attn_scores.squeeze(0)
-                
-            #     # Normalize to [0, 1] using Teacher's statistics from previous step
-            #     pseudo_labels = (attn_scores - self.attn_min) / (self.attn_max - self.attn_min + 1e-8)
-            #     pseudo_labels = torch.clamp(pseudo_labels, 0, 1)
-                
-            #     # Negative Bag Constraint: 
-            #     # 如果该 Batch 属于阴性 Bag，则所有 Patch 标签强制为 0
-            #     # label_info[1] 是 Tensor [B]
-            #     is_neg_bag = (bag_labels == 0)
-            #     pseudo_labels[is_neg_bag] = 0.0
-                
-            # 3. Student Forward
-            student_logits = self.student(feats) # [B, 2]
-            student_probs = torch.softmax(student_logits, dim=1)
-            
-            # 4. Distillation Loss
-            # Student 学习拟合 pseudo_labels (即 Class 1 的概率)
-            if isinstance(self.student, nn.DataParallel):
-                loss = self.student.module.get_loss(student_probs, pseudo_labels, neg_weight=0.5)
-            else:
-                loss = self.student.get_loss(student_probs, pseudo_labels, neg_weight=0.5)
-            
-            loss.backward()
-            
-            nn.utils.clip_grad_norm_(self.encoder.parameters(), 5.0)
-            nn.utils.clip_grad_norm_(self.student.parameters(), 5.0)
-            
-            self.opt_encoder.step()
-            self.opt_student.step()
-            
-            total_loss += loss.item()
-            
-            if batch_idx % 50 == 0:
-                self.writer.add_scalar('Train/Loss_Student', loss.item(), epoch * len(self.train_inst_loader) + batch_idx)
-                
-        return total_loss / len(self.train_inst_loader)
 
-    def optimize_student1(self, epoch):
+    def optimize_student(self, epoch):
         """
         训练 Student。
         使用 Bag-level Loading，直接从 Bank 读取伪标签。
         包含 TensorBoard Debug 绘图：对比 Student 预测与 Teacher 伪标签。
         """
-        self.encoder.eval()
+        self.encoder.train()
         self.student.train()
         self.teacher.eval() 
         
@@ -458,15 +427,15 @@ class Optimizer:
             
             if len(imgs) == 0: continue
 
-            # self.opt_encoder.zero_grad()
+            self.opt_encoder.zero_grad()
             self.opt_student.zero_grad()
             
             # 1. 获取伪标签 (直接从 Bank 读取，已经是概率值)
             pseudo_labels = self.pseudo_label_bank[indices]
             
             # 2. Student 前向
-            with torch.no_grad():
-                feats = self.encoder(imgs)
+            feats = self.encoder(imgs)
+
             student_logits = self.student(feats) # [N, 2]
             student_probs = torch.softmax(student_logits, dim=1) # [N, 2]
             
@@ -478,10 +447,11 @@ class Optimizer:
             
             loss.backward()
             
-            # torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 5.0)
+            torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), 5.0)
             torch.nn.utils.clip_grad_norm_(self.student.parameters(), 5.0)
             
-            # self.opt_encoder.step()
+            self.opt_encoder.step()
+            self.scheduler_encoder.step()
             self.opt_student.step()
             
             total_loss += loss.item()
@@ -526,115 +496,7 @@ class Optimizer:
 
         return total_loss / len(self.train_bag_loader)
 
-    def optimize_student0(self, epoch):
-        """
-        训练 Student (MLP) 使用 Teacher 的 Attention 作为伪标签
-        (修改：改为 Bag-level Loading，并添加 TensorBoard Debug 绘图)
-        """
-        self.encoder.train()
-        self.student.train()
-        self.teacher.eval() # Teacher 固定用于生成标签
-        
-        total_loss = 0.
-        
-        # 【新增 1】: 随机选择 3 个 Bag 的索引用于 Debug 绘图
-        num_batches = len(self.train_bag_loader)
-        if num_batches > 3:
-            debug_indices = np.random.choice(num_batches, 3, replace=False)
-        else:
-            debug_indices = np.arange(num_batches)
-        
-        # 【修改点 1】: 使用 train_bag_loader
-        pbar = tqdm(self.train_bag_loader, desc="Train Student (Bag)", leave=False)
-        
-        # 【修改点 2】: 遍历 Bag 数据 (batch_size=1)
-        for batch_idx, (data, label_info, selected_indices) in enumerate(pbar):
-            # data: [1, N, 3, H, W] -> squeeze -> [N, 3, H, W]
-            imgs = data.squeeze(0).to(self.device)
-            
-            # selected_indices: [1, N] -> squeeze -> [N]
-            indices = selected_indices.squeeze(0).long().to(self.device)
-            
-            # 过滤空包
-            if len(imgs) == 0: continue
-
-            self.opt_encoder.zero_grad()
-            self.opt_student.zero_grad()
-            
-            # 1. Feature Extraction
-            # 从 Bank 中取出该 Bag 所有 patch 的伪标签
-            pseudo_labels = self.pseudo_label_bank[indices]
-            
-            # 提取特征 [N, 512]
-            feats = self.encoder(imgs) 
-            
-            # 2. Student Forward
-            student_logits = self.student(feats) # [N, 2]
-            student_probs = torch.softmax(student_logits, dim=1)
-            
-            # 3. Distillation Loss
-            if isinstance(self.student, nn.DataParallel):
-                loss = self.student.module.get_loss(student_probs, pseudo_labels, neg_weight=0.5)
-            else:
-                loss = self.student.get_loss(student_probs, pseudo_labels, neg_weight=0.5)
-            
-            loss.backward()
-            
-            nn.utils.clip_grad_norm_(self.encoder.parameters(), 5.0)
-            nn.utils.clip_grad_norm_(self.student.parameters(), 5.0)
-            
-            self.opt_encoder.step()
-            self.opt_student.step()
-            
-            total_loss += loss.item()
-            
-            # 【修改点 3】: 日志记录使用 train_bag_loader 长度
-            if batch_idx % 50 == 0:
-                self.writer.add_scalar('Train/Loss_Student', loss.item(), epoch * len(self.train_bag_loader) + batch_idx)
-            
-            # 【新增 2】: TensorBoard Debug 绘图
-            if batch_idx in debug_indices:
-                try:
-                    # 确定当前的采样槽位 (0, 1, 2)，保证 TensorBoard Tag 固定
-                    slot_id = np.where(debug_indices == batch_idx)[0][0]
-                    
-                    # 准备数据 (转为numpy)
-                    # s_probs: 学生预测为正类的概率 [N]
-                    s_probs = student_probs.detach().cpu().numpy()[:, 1]
-                    # p_labels: 伪标签分数 [N]
-                    p_labels = pseudo_labels.detach().cpu().numpy()
-                    
-                    # 获取 GT Label (假设 label_info[1] 是 Bag Label)
-                    bag_gt = label_info[1]
-                    if isinstance(bag_gt, torch.Tensor):
-                        bag_gt = bag_gt.item()
-
-                    # 绘图
-                    fig = plt.figure(figsize=(8, 4))
-                    x_axis = np.arange(len(s_probs))
-                    
-                    plt.plot(x_axis, s_probs, 'b.-', label='Student Pred (Pos)', alpha=0.7, linewidth=1)
-                    plt.plot(x_axis, p_labels, 'r.--', label='Pseudo Label', alpha=0.7, linewidth=1)
-                    
-                    plt.title(f'Ep {epoch} | Bag {batch_idx} | GT: {bag_gt} | Loss: {loss.item():.4f}')
-                    plt.xlabel('Instance Index')
-                    plt.ylabel('Probability / Score')
-                    plt.ylim(-0.05, 1.05)
-                    plt.legend(loc='upper right')
-                    plt.grid(True, linestyle='--', alpha=0.5)
-                    plt.tight_layout()
-                    
-                    # 记录到 TensorBoard (Tag: Train_Debug/Sample_0, Sample_1, ...)
-                    self.writer.add_figure(f'Train_Debug/Sample_{slot_id}', fig, epoch)
-                    plt.close(fig)
-                    
-                except Exception as e:
-                    print(f"[Warning] Plotting failed for batch {batch_idx}: {e}")
-
-        # 【修改点 4】: 返回平均 Loss
-        return total_loss / len(self.train_bag_loader)
-
-    def evaluate_student1(self, epoch):
+    def evaluate_student(self, epoch):
         """
         评估 Student 性能
         逻辑：Student 对 Test Bag 中的所有 Patch 进行预测，取 Max Score 作为 Bag 分数
@@ -724,77 +586,83 @@ class Optimizer:
         
         return roc_auc, ap, acc
 
-    def evaluate_student(self, epoch):
-        """
-        评估 Student 性能
-        逻辑：Student 对 Test Bag 中的所有 Patch 进行预测，取 Max Score 作为 Bag 分数
-        """
-        self.encoder.eval()
-        self.student.eval()
+def load_pretrained_wrapper(model, ckpt_path, model_name, main_device):
+    if ckpt_path is not None and os.path.isfile(ckpt_path):
+        print(f"[*] Loading {model_name} from: {ckpt_path}")
+        checkpoint = torch.load(ckpt_path, map_location=main_device)
         
-        all_labels = []
-        all_preds = []
-        
-        # 使用 Bag Loader 进行测试，方便聚合
-        with torch.no_grad():
-            for data, label_info, _ in tqdm(self.test_bag_loader, desc="Eval Student", leave=False):
-                imgs = data.squeeze(0).to(self.device)
-                label = label_info[1].item()
-                
-                if len(imgs) == 0: continue
-                
-                # Forward
-                feats = self.encoder(imgs)
-                logits = self.student(feats)
-                probs = torch.softmax(logits, dim=1)[:, 1] # 取 Class 1 概率
-                
-                # Aggregation: Max Pooling
-                bag_score = probs.max().item()
-                
-                all_labels.append(label)
-                all_preds.append(bag_score)
-        
-        all_labels = np.array(all_labels)
-        all_preds = np.array(all_preds)
-        
-        # Metrics
-        roc_auc, acc = calculate_metrics(all_labels, all_preds)
-        ap = average_precision_score(all_labels, all_preds)
-        
-        # TensorBoard Logging
-        self.writer.add_scalar('Test/AUC', roc_auc, epoch)
-        self.writer.add_scalar('Test/ACC', acc, epoch)
-        self.writer.add_scalar('Test/AP', ap, epoch)
-        
-        # Figures
-        roc_fig = get_roc_figure(all_labels, all_preds)
-        pr_fig = get_pr_figure(all_labels, all_preds)
-        self.writer.add_figure('Test/ROC_Curve', roc_fig, epoch)
-        self.writer.add_figure('Test/PR_Curve', pr_fig, epoch)
-        plt.close(roc_fig)
-        plt.close(pr_fig)
-        
-        return roc_auc, ap, acc
+        # 1. 尝试获取 state_dict
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        elif 'teacher' in checkpoint: # 兼容旧 Teacher 格式
+            state_dict = checkpoint['teacher']
+        elif 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        else:
+            state_dict = checkpoint # 假设本身就是 state_dict
 
+        # 2. 处理 'module.' 前缀匹配问题
+        # 获取当前模型的 key 格式（是否被 DataParallel 包裹）
+        if isinstance(model, nn.DataParallel):
+            model_keys = model.module.state_dict().keys()
+            is_model_parallel = True
+        else:
+            model_keys = model.state_dict().keys()
+            is_model_parallel = False
+        
+        # 处理加载权重的 keys
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k
+            # 如果权重有 module. 但模型没有 -> 去掉
+            if k.startswith('module.') and not is_model_parallel:
+                name = k[7:]
+            # 如果权重没有 module. 但模型有 -> 加上 (通常 PyTorch DataParallel 会自动处理，但手动更稳)
+            elif not k.startswith('module.') and is_model_parallel:
+                # 注意：如果这里不加，load_state_dict 时 DataParallel 容器可能无法直接匹配
+                # 这里简单的做法是先去掉权重的 module. 前缀，然后让 model.module 去加载
+                # 或者保留现状，依赖 load_state_dict 的 strict=False
+                name = k 
+            
+            new_state_dict[name] = v
+        
+        # 3. 执行加载
+        try:
+            # 如果模型是 DataParallel，建议对 model.module 加载，这样可以忽略前缀差异
+            target_model = model.module if isinstance(model, nn.DataParallel) else model
+            
+            # 再次清洗 key，确保去除 'module.' 以便通过 target_model 加载
+            clean_state_dict = {k.replace('module.', ''): v for k, v in new_state_dict.items()}
+            
+            target_model.load_state_dict(clean_state_dict, strict=True)
+            print(f"    -> {model_name} loaded successfully (Strict).")
+        except RuntimeError as e:
+            print(f"    [Warning] Strict loading failed for {model_name}, trying non-strict. Error: {e}")
+            target_model.load_state_dict(clean_state_dict, strict=False)
+    else:
+        if ckpt_path:
+            print(f"[Error] Checkpoint not found: {ckpt_path}")
 # ==========================================
 # 3. 主程序入口
 # ==========================================
 
 def get_args():
     parser = argparse.ArgumentParser(description='EndoKED-MIL Simplified Training')
-    parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for Student training')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--seed', type=int, default=114)
+    parser.add_argument('--seed', type=int, default=1140)
     parser.add_argument('--device_ids', type=str, default='0,1', help='GPU IDs, e.g., 0,1')
-    parser.add_argument('--downsample', type=float, default=0.5, help='Use subset of data')
+    parser.add_argument('--downsample', type=float, default=1, help='Use subset of data')
     parser.add_argument('--save_dir', type=str, default='./checkpoints/mmked_mil')
     parser.add_argument('--log_dir', type=str, default='./runs/mmked_mil')
-    parser.add_argument('--teacher_ckpt', type=str, default='/home/zhaokaizhang/code/test_code/runs/runs_transmil/TRANSMIL_20260109-015353_seed206_split0.75_lr5e-05_ds0.9/best_model.pth', 
-                        help='Path to pretrained Teacher (TransMIL) checkpoint. If None, train from scratch.')
-    parser.add_argument('--split', default=0.75, type=float, help='训练集占比')
+    parser.add_argument('--teacher_ckpt', type=str, default=None, help='Path to Teacher checkpoint')
+    parser.add_argument('--student_ckpt', type=str, default=None, help='Path to Student checkpoint')
+    parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to Encoder checkpoint')
+    parser.add_argument('--split', default=0.70, type=float, help='训练集占比')
     parser.add_argument('--datasetnum',type=int, default=2, help='使用的数据集数量')
-    parser.add_argument('--warmup', type=int, default=7, help='先训练教师')
+    parser.add_argument('--warmup', type=int, default=5, help='先训练教师')
+    parser.add_argument('--afwarmup', type=int, default=3,help='warmup后训练几个epoch再开始保存best model')
     return parser.parse_args()
 
 def main():
@@ -816,6 +684,10 @@ def main():
     log_dir = os.path.join(args.log_dir, run_name)
     writer = SummaryWriter(log_dir=log_dir)
     print(f"Tensorboard logging to: {log_dir}")
+
+    save_dir = os.path.join(args.save_dir, run_name)
+    os.makedirs(save_dir, exist_ok=True)
+
 
     print(f"Using Devices: {device_ids}")
     
@@ -857,45 +729,16 @@ def main():
     # Teacher (Single GPU recommended for Bag processing, or handled carefully)
     # TransMIL 很难在 Batch=1 的情况下并行，所以通常不加 DataParallel
     teacher = get_transmil_teacher().to(main_device)
-
-    # [新增] 加载预训练 Teacher 权重
-    args.teacher_ckpt = None
-    if args.teacher_ckpt is not None:
-        if os.path.isfile(args.teacher_ckpt):
-            print(f"Loading Pretrained Teacher from: {args.teacher_ckpt}")
-            checkpoint = torch.load(args.teacher_ckpt, map_location=main_device)
-            
-            # 处理 checkpoint 字典结构
-            # 情况 A: 这是一个完整的 checkpoint (包含 epoch, model_state_dict 等)
-            if 'model_state_dict' in checkpoint:
-                state_dict = checkpoint['model_state_dict']
-            elif 'teacher' in checkpoint: # 兼容我们之前定义的 save_checkpoint 格式
-                state_dict = checkpoint['teacher']
-            else:
-                # 情况 B: 这是一个纯 state_dict
-                state_dict = checkpoint
-
-            # 处理 'module.' 前缀 (以防预训练时用了 DataParallel)
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                name = k[7:] if k.startswith('module.') else k
-                new_state_dict[name] = v
-            
-            # 加载权重 (使用 strict=False 以防 wrapper 层命名微小差异，但建议先尝试 True)
-            try:
-                teacher.model.load_state_dict(new_state_dict, strict=True)
-            except RuntimeError as e:
-                print(f"[Warning] Strict loading failed, trying strict=False. Error: {e}")
-                teacher.model.load_state_dict(new_state_dict, strict=False)
-        else:
-            print(f"[Error] Teacher checkpoint not found at {args.teacher_ckpt}")
-            return
     
     # Student (DataParallel)
     student = get_student().to(main_device)
-    if len(device_ids) > 1:
-        student = nn.DataParallel(student, device_ids=device_ids)
         
+    encoder_ckpt = args.encoder_ckpt
+    teacher_ckpt = args.teacher_ckpt
+    student_ckpt = args.student_ckpt
+    load_pretrained_wrapper(encoder, encoder_ckpt, "Encoder", main_device)
+    load_pretrained_wrapper(teacher, teacher_ckpt, "Teacher", main_device)
+    load_pretrained_wrapper(student, student_ckpt, "Student", main_device)
     # 4. Optimizers
     # 通常 Encoder 学习率较低或冻结
     opt_encoder = optim.Adam(encoder.parameters(), lr=args.lr * 0.1) 
@@ -918,6 +761,7 @@ def main():
         test_inst_loader=test_inst_loader,
         writer=writer,
         warmup=args.warmup,
+        save_dir = save_dir,
         args=args
     )
     
