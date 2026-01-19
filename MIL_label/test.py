@@ -9,7 +9,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_sco
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
-from model import PretrainedResNet18_Encoder, get_student
+from models.model import PretrainedResNet18_Encoder, get_student
 import json
 from datetime import datetime
 
@@ -19,8 +19,8 @@ class SingleImageDataset(Dataset):
         遍历从 start_id (默认101) 到 max_id 的所有文件夹，读取图片和对应标签
         """
         # 硬编码你的路径
-        self.img_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/test/Images'
-        self.anno_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/test/Annotations'
+        self.img_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Images'
+        self.anno_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Annotations'
         self.transform = transform
         self.samples = [] # 存储 (path, label)
 

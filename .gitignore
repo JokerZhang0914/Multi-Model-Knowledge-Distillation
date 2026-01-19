@@ -26,6 +26,7 @@ TestResults.xml
 *.jpeg
 *.png
 *.mp4
+*.avi
 
 # excel files
 *.xlsx
@@ -52,3 +53,6 @@ debug.py
 config/
 
 result/
+
+*.zip
+*.rar

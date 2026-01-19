@@ -24,8 +24,8 @@ from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_prec
 import utils
 
 from dataset import DataSet_MIL, gather_align_Img
-from model_head import PretrainedResNet18_Encoder, teacher_Attention_head, teacher_DSMIL_head, student_head
-from model_head import map_abmil, map_dsmil, map_student
+from models.model_head import PretrainedResNet18_Encoder, teacher_Attention_head, teacher_DSMIL_head, student_head
+from models.model_head import map_abmil, map_dsmil, map_student
 
 
 class Optimizer:

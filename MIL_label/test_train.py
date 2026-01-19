@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 # 引入自定义模块
 import dataset
-from model import PretrainedResNet18_Encoder, get_transmil_teacher, get_student
+from models.model import PretrainedResNet18_Encoder, get_transmil_teacher, get_student
 
 # ==========================================
 # 1. 辅助功能函数封装 (Utils)

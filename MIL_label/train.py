@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 # 引入自定义模块
 import dataset
-from model import PretrainedResNet18_Encoder, get_transmil_teacher, get_student
+from models.model import PretrainedResNet18_Encoder, get_transmil_teacher, get_student
 from utils import save_checkpoint, get_features_chunked, calculate_metrics, get_pr_figure, get_roc_figure
 
 
@@ -119,7 +119,7 @@ class Optimizer:
                 
                 # 2. Evaluate Student
                 test_auc, test_ap, test_acc = self.evaluate_student(epoch)
-                print(f"  > Student Loss: {loss_student:.4f} | Test AUC: {test_auc:.4f}")
+                print(f"  > Student Loss: {loss_student:.4f} | val AUC: {test_auc:.4f}")
                 
                 # 保存最佳 Student
                 if test_ap > self.best_student_ap and test_acc > 0.9 and epoch >= self.warmup + self.afwarmup:
@@ -319,8 +319,8 @@ class Optimizer:
         ap = average_precision_score(all_labels, all_preds)
         
         # 记录到 TensorBoard
-        self.writer.add_scalar('Test/Teacher_AUC', roc_auc, epoch)
-        self.writer.add_scalar('Test/Teacher_AP', ap, epoch)
+        self.writer.add_scalar('val/Teacher_AUC', roc_auc, epoch)
+        self.writer.add_scalar('val/Teacher_AP', ap, epoch)
         
         return roc_auc, ap
 
@@ -435,7 +435,7 @@ class Optimizer:
         
         # 使用 Bag Loader 进行测试
         with torch.no_grad():
-            for batch_idx, (data, label_info, _) in enumerate(tqdm(self.test_bag_loader, desc="Eval Student", leave=False)):
+            for batch_idx, (data, label_info, _) in enumerate(tqdm(self.test_bag_loader, desc="Eval Student", leave=True)):
                 imgs = data.squeeze(0).to(self.device)
                 label = label_info[1].item()
                 
@@ -494,15 +494,15 @@ class Optimizer:
         ap = average_precision_score(all_labels, all_preds)
         
         # TensorBoard Logging (Scalars)
-        self.writer.add_scalar('Test/AUC', roc_auc, epoch)
-        self.writer.add_scalar('Test/ACC', acc, epoch)
-        self.writer.add_scalar('Test/AP', ap, epoch)
+        self.writer.add_scalar('val/AUC', roc_auc, epoch)
+        self.writer.add_scalar('val/ACC', acc, epoch)
+        self.writer.add_scalar('val/AP', ap, epoch)
         
         # Figures (ROC/PR Curves)
         roc_fig = get_roc_figure(all_labels, all_preds)
         pr_fig = get_pr_figure(all_labels, all_preds)
-        self.writer.add_figure('Test/ROC_Curve', roc_fig, epoch)
-        self.writer.add_figure('Test/PR_Curve', pr_fig, epoch)
+        self.writer.add_figure('val/ROC_Curve', roc_fig, epoch)
+        self.writer.add_figure('val/PR_Curve', pr_fig, epoch)
         plt.close(roc_fig)
         plt.close(pr_fig)
         
