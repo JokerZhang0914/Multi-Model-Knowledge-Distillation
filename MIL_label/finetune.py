@@ -127,14 +127,13 @@ def main(args):
 
     # 2. 数据准备 (按文件夹 ID 划分)
     all_ids = list(range(1, 101)) # 1 到 100
-    # 随机划分 70% 训练, 30% 验证
     train_ids, val_ids = train_test_split(all_ids, train_size=args.split, random_state=args.seed, shuffle=True)
     
     print(f"Split: {len(train_ids)} Train Folders, {len(val_ids)} Valid Folders")
 
     # 数据增强
     train_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize(size=(512, 512)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.ToTensor(),
@@ -142,7 +141,7 @@ def main(args):
     ])
     
     val_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize(size=(512, 512)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -294,7 +293,7 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--seed', type=int, default=127)
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--split', type=float, default=0.7)
     

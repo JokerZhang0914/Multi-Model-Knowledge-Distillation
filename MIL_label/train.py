@@ -276,7 +276,6 @@ class Optimizer:
         
         return avg_loss, epoch_attn_min, epoch_attn_max
 
-    # [Add this method to Optimizer class]
     def evaluate_teacher(self, epoch):
         """
         评估 Teacher 在测试集上的性能 (Bag Level)
@@ -571,9 +570,9 @@ def load_pretrained_wrapper(model, ckpt_path, model_name, main_device):
 def get_args():
     parser = argparse.ArgumentParser(description='EndoKED-MIL Simplified Training')
     parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for Student training')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for Student training')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--seed', type=int, default=1140)
+    parser.add_argument('--seed', type=int, default=127)
     parser.add_argument('--device_ids', type=str, default='0,1', help='GPU IDs, e.g., 0,1')
     parser.add_argument('--downsample', type=float, default=1, help='Use subset of data')
     parser.add_argument('--save_dir', type=str, default='./checkpoints/mmked_mil')
@@ -581,9 +580,9 @@ def get_args():
     parser.add_argument('--teacher_ckpt', type=str, default=None, help='Path to Teacher checkpoint')
     parser.add_argument('--student_ckpt', type=str, default=None, help='Path to Student checkpoint')
     parser.add_argument('--encoder_ckpt', type=str, default=None, help='Path to Encoder checkpoint')
-    parser.add_argument('--split', default=0.70, type=float, help='训练集占比')
+    parser.add_argument('--split', default=0.75, type=float, help='训练集占比')
     parser.add_argument('--datasetnum',type=int, default=4, help='使用的数据集数量')
-    parser.add_argument('--warmup', type=int, default=5, help='先训练教师')
+    parser.add_argument('--warmup', type=int, default=7, help='先训练教师')
     parser.add_argument('--afwarmup', type=int, default=3,help='warmup后训练几个epoch再开始保存best model')
     return parser.parse_args()
 
@@ -602,7 +601,8 @@ def main():
     main_device = torch.device(f"cuda:{device_ids[0]}" if torch.cuda.is_available() else "cpu")
     
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_name = f"MILKED_{current_time}_seed{args.seed}_split{args.split}_lr{args.lr}_ds{args.downsample}_warmup{args.warmup}_dataset{args.datasetnum}"
+    # run_name = f"MILKED_{current_time}_seed{args.seed}_split{args.split}_lr{args.lr}_ds{args.downsample}_warmup{args.warmup}_dataset{args.datasetnum}"
+    run_name = f"MILKED_{current_time}_seed{args.seed}_split{args.split}_lr{args.lr}_ds{args.downsample}_warmup{args.warmup}_datasetmixed"
     log_dir = os.path.join(args.log_dir, run_name)
     writer = SummaryWriter(log_dir=log_dir)
     print(f"Tensorboard logging to: {log_dir}")

@@ -74,8 +74,8 @@ def gather_align_Img(root_dir='', split=0.7):
     raw_label = np.concatenate([
         np.array(pd.read_csv(data_path + '/肿瘤医院_1/label_zhongliu.csv')),
         np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai0.csv')),
-        np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai1.csv'))
-        #np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai2.csv'))
+        # np.array(pd.read_csv(data_path + '/公开数据集/label_gongkai1.csv')),
+        np.array(pd.read_csv(data_path + '/公开数据集/label_gongkaimix.csv'))
     ], axis=0)
     
     # clinical_info = pd.read_excel("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/path.xlsx").to_numpy()
@@ -87,7 +87,8 @@ def gather_align_Img(root_dir='', split=0.7):
     patient_gongkai0 = glob(data_path + '/公开数据集/0_normal_aligned/*')
     patient_gongkai1 = glob(data_path + '/公开数据集/1_hyperplastic_aligned/*')
     patient_gongkai2 = glob(data_path + '/公开数据集/2_adenomatous_aligned/*')
-    patient_all = patient_gongkai0 + patient_zhongliu + patient_gongkai1 #+ patient_gongkai2
+    patient_gongkaimix = glob(data_path + '/公开数据集mix/*')
+    patient_all = patient_gongkai0 + patient_zhongliu + patient_gongkaimix
     patient_all = np.array(patient_all)
 
     # match img and label
@@ -161,13 +162,17 @@ class DataSet_MIL(torch.utils.data.Dataset):
                 #                      std=[np.float32(0.27994397), np.float32(0.22124837), np.float32(0.17467397)])
                 # # 公开0+公开1
 
-                transforms.Normalize(mean=[np.float32(0.513409), np.float32(0.32925022), np.float32(0.24829857)],
-                                     std=[np.float32(0.28215688), np.float32(0.22659373), np.float32(0.18255435)])
+                # transforms.Normalize(mean=[np.float32(0.513409), np.float32(0.32925022), np.float32(0.24829857)],
+                #                      std=[np.float32(0.28215688), np.float32(0.22659373), np.float32(0.18255435)])
                 # # 公开0+公开1+肿瘤
 
-                # transforms.Normalize(mean=[np.float32(0.51605356), np.float32(0.31583533), np.float32(0.23974599)],
-                #                      std= [np.float32(0.27709848), np.float32(0.21817438), np.float32(0.1755912)])
-                # # 公开0+公开1+肿瘤+公开2                    
+                transforms.Normalize(mean=[np.float32(0.5405388), np.float32(0.34570193), np.float32(0.2603687)],
+                                     std=[np.float32(0.2804259), np.float32(0.21839379), np.float32(0.17752528)])
+                # # 公开0+公开1+肿瘤+公开2  
+                # 
+                # transforms.Normalize(mean=[np.float32(0.53737867), np.float32(0.33760786), np.float32(0.25054556)],
+                #                      std=[np.float32(0.27460945), np.float32(0.21235862), np.float32(0.17054911)])
+                # # 公开0+公开mix+肿瘤                  
             ])
 
         all_slides = ds

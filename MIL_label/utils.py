@@ -3,7 +3,8 @@ import numpy as np
 import random
 import os
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, precision_recall_curve, roc_curve, auc, average_precision_score, metrics
+from sklearn.metrics import roc_auc_score, precision_recall_curve, roc_curve, auc, average_precision_score
+from sklearn import metrics
 
 def cal_auc(label, pred, pos_label=1, return_fpr_tpr=False, save_fpr_tpr=False):
     if type(label) == torch.Tensor:

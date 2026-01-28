@@ -87,7 +87,7 @@ class SingleImageDataset(Dataset):
 def get_test_loader(max_id, start_id=101, batch_size=32):
     # 定义预处理 (需与训练时 Encoder 输入一致)
     transform = transforms.Compose([
-        transforms.Resize((512, 512)), # ResNet 输入通常是 224
+        transforms.Resize((512, 512)), 
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
