@@ -24,7 +24,7 @@ USER_TEMPLATE = (
 )
 
 USER_TEMPLATE_ZHONGSHAN = (
-    "根据下面提供的病理报告（包含巨检和病理诊断，同等重要），判断内容是否提及‘息肉’。\n"
+    "根据下面提供的病理报告（包含巨检和病理诊断），判断病人是否有‘息肉’或内容是否提及‘息肉’。\n"
     "平坦或隆起样病灶也属于息肉。\n"
     "如果有息肉，回答 1；如果没有息肉，回答 0。\n"
     "不需要解释，只输出 1 或 0。\n\n"
@@ -146,39 +146,52 @@ def extract_label_zhongshan(excel_path):
         # ==========================================
         # 步骤 1: 先判断路径是否存在 (填入 I 列)
         # ==========================================
-        raw_date = row.get('检查日期')
-        tech_id = str(row.get('医技号', '')).strip()
-        check_serial_id = str(row.get('医技检查流水号', '')).strip()
-        
-        # 转换日期格式 -> YYYYMMDD
-        date_folder_name = ""
+        existing_file_flag = row.get('file_exists')
+
+        # 统一转成 int 逻辑判断
         try:
-            if isinstance(raw_date, pd.Timestamp):
-                date_folder_name = raw_date.strftime('%Y%m%d')
-            else:
-                # 假设字符串是 '2020/08/05' 格式
-                date_str = str(raw_date).split(' ')[0]
-                date_folder_name = date_str.replace('/', '').replace('-', '')
+            existing_file_flag = int(existing_file_flag)
         except:
-            pass
+            existing_file_flag = 0
 
-        # 构建路径
-        target_path = os.path.join(root_folder, date_folder_name, tech_id, check_serial_id)
-        
-        # 检查存在性
-        exists = 0
-        if date_folder_name and tech_id and check_serial_id and os.path.exists(target_path):
+        if existing_file_flag == 1:
+            # Excel 已确认存在，直接跳过路径检查
             exists = 1
-            print(f"  [Path] ✅ 路径存在: {target_path}")
-        else:
-            exists = 0
-            if not (date_folder_name and tech_id and check_serial_id):
-                 print(f"  [Path] ❌ 信息缺失，跳过路径检查")
-            else:
-                 print(f"  [Path] ❌ 路径不存在: {target_path}")
+            print("  [Path]Excel 标记为已存在 (file_exists=1)，跳过路径检查")
 
-        # 更新 file_exists 列
-        df.at[index, 'file_exists'] = exists
+        else:
+            # Excel 未确认存在，才进行实际路径检查
+            raw_date = row.get('检查日期')
+            tech_id = str(row.get('医技号', '')).strip()
+            check_serial_id = str(row.get('医技检查流水号', '')).strip()
+
+            # 转换日期格式 -> YYYYMMDD
+            date_folder_name = ""
+            try:
+                if isinstance(raw_date, pd.Timestamp):
+                    date_folder_name = raw_date.strftime('%Y%m%d')
+                else:
+                    date_str = str(raw_date).split(' ')[0]
+                    date_folder_name = date_str.replace('/', '').replace('-', '')
+            except:
+                pass
+
+            # 构建路径
+            target_path = os.path.join(root_folder, date_folder_name, tech_id, check_serial_id)
+
+            # 实际检查路径
+            if date_folder_name and tech_id and check_serial_id and os.path.exists(target_path):
+                exists = 1
+                print(f"  [Path]路径存在: {target_path}")
+            else:
+                exists = 0
+                if not (date_folder_name and tech_id and check_serial_id):
+                    print("  [Path]信息缺失，无法检查路径")
+                else:
+                    print(f"  [Path]路径不存在: {target_path}")
+
+            # 写回 Excel
+            df.at[index, 'file_exists'] = exists
 
         # ==========================================
         # 步骤 2: 条件判断是否调用 API (填入 H 列)
@@ -197,7 +210,7 @@ def extract_label_zhongshan(excel_path):
             
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": USER_TEMPLATE.format(macroscopic, diagnosis)},
+                {"role": "user", "content": USER_TEMPLATE_ZHONGSHAN.format(macroscopic, diagnosis)},
             ]
 
             response = call_llm_safe(messages)
@@ -242,6 +255,6 @@ if __name__ == "__main__":
     # print(f"返回的准确率：{acc:.4f}")
     
     # 输入文件路径 
-    input_excel = r"E:\AAA_joker\本科毕设\code\data\数据整理_内镜肠镜病理（2020年）_厦门.xlsx"
+    input_excel = r"E:\AAA_joker\本科毕设\code\Multi-Model-Knowledge-Distillation\LLM_label\数据整理_内镜肠镜病理（2020年）_厦门.xlsx"
     
     extract_label_zhongshan(input_excel)
