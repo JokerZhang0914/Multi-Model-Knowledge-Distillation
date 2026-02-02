@@ -7,41 +7,30 @@ from torchvision import transforms as T
 import imageio
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-import transforms
 
+from . import transforms
 
-
-# ==========================================
-#               路径配置区域 (硬编码)
-# ==========================================
-
-# 1. 阳性训练样本文件夹列表 (包含息肉的图片)
-TRAIN_POS_DIRS = [
-    "D:/公开数据集/2_adenomatous",
-    "D:/公开数据集/1_hyperplastic"
-]
-
-# 2. 阴性训练样本文件夹列表 (包含正常/背景的图片)
-TRAIN_NEG_DIRS = [
-    "D:/公开数据集/0_normal"
-]
-
-# 3. 测试集根目录
-#    该目录下必须包含 'Original' (或 'images') 和 'Ground Truth' (或 'masks') 两个子文件夹
-VAL_ROOT_DIR = "E:/AAA_joker/本科毕设/CVC-ClinicDB"
-# ==========================================
-
-# 支持的图片扩展名
-IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp')
 
 def is_image_file(filename):
+    # 支持的图片扩展名
+    IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp')
     return filename.lower().endswith(IMG_EXTENSIONS)
 
 def load_dataset_from_folders():
     """
     读取硬编码的文件夹路径加载数据集。
-    直接使用文件顶部的 TRAIN_POS_DIRS 和 TRAIN_NEG_DIRS。
     """
+    # 1. 阳性训练样本文件夹列表 (包含息肉的图片)
+    TRAIN_POS_DIRS = [
+        "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/1_hyperplastic_aligned",
+        "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/2_adenomatous_aligned"
+    ]
+
+    # 2. 阴性训练样本文件夹列表 (包含正常/背景的图片)
+    TRAIN_NEG_DIRS = [
+        "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned"
+    ]
+
     img_path_list = []
     label_list = []
     
@@ -52,17 +41,22 @@ def load_dataset_from_folders():
             print(f"警告: 路径不存在，已跳过: {p_dir}")
             continue
             
-        files = glob(os.path.join(p_dir, '*'))
-        images = [f for f in files if is_image_file(f)]
+        sub_dirs = [os.path.join(p_dir, d) for d in os.listdir(p_dir) if os.path.isdir(os.path.join(p_dir, d))]
         
-        if len(images) == 0:
+        all_images = []
+        for sub_dir in sub_dirs:
+            files = glob(os.path.join(sub_dir, '*'))
+            images = [f for f in files if is_image_file(f)]
+            all_images.extend(images)
+        
+        if len(all_images) == 0:
             print(f"提示: {p_dir} 中没有找到图片。")
             continue
             
-        print(f"  [+] {len(images)} 张 -> {p_dir}")
+        print(f"  [+] {len(all_images)} 张 -> {p_dir}")
         
-        img_path_list.extend(images)
-        label_list.extend([np.array([1.0])] * len(images))
+        img_path_list.extend(all_images)
+        label_list.extend([np.array([1.0])] * len(all_images))
 
     # --- 2. 处理阴性文件夹 (Label = 0.0) ---
     if TRAIN_NEG_DIRS:
@@ -72,17 +66,22 @@ def load_dataset_from_folders():
                 print(f"警告: 路径不存在，已跳过: {n_dir}")
                 continue
                 
-            files = glob(os.path.join(n_dir, '*'))
-            images = [f for f in files if is_image_file(f)]
+            sub_dirs = [os.path.join(n_dir, d) for d in os.listdir(n_dir) if os.path.isdir(os.path.join(n_dir, d))]
             
-            if len(images) == 0:
+            all_images = []
+            for sub_dir in sub_dirs:
+                files = glob(os.path.join(sub_dir, '*'))
+                images = [f for f in files if is_image_file(f)]
+                all_images.extend(images)
+            
+            if len(all_images) == 0:
                 print(f"提示: {n_dir} 中没有找到图片。")
                 continue
 
-            print(f"  [-] {len(images)} 张 -> {n_dir}")
+            print(f"  [-] {len(all_images)} 张 -> {n_dir}")
             
-            img_path_list.extend(images)
-            label_list.extend([np.array([0.0])] * len(images))
+            img_path_list.extend(all_images)
+            label_list.extend([np.array([0.0])] * len(all_images))
     else:
         print("未配置阴性样本文件夹 (TRAIN_NEG_DIRS 为空)")
 
@@ -92,8 +91,12 @@ def load_dataset_from_folders():
 def load_test_img_mask():
     """
     加载测试集：原图和 Mask
-    直接使用 VAL_ROOT_DIR
     """
+
+    # 测试集根目录
+    # 该目录下必须包含 'Original' (或 'images') 和 'Ground Truth' (或 'masks') 两个子文件夹
+    VAL_ROOT_DIR = "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/CVC-ClinicDB"
+
     root_dir = VAL_ROOT_DIR
     if not os.path.exists(root_dir):
         print(f"错误: 测试集根目录不存在: {root_dir}")

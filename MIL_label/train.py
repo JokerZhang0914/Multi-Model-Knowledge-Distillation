@@ -599,7 +599,6 @@ def main():
     # 解析 GPU 列表
     device_ids = [int(x) for x in args.device_ids.split(',')]
     main_device = torch.device(f"cuda:{device_ids[0]}" if torch.cuda.is_available() else "cpu")
-    
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     # run_name = f"MILKED_{current_time}_seed{args.seed}_split{args.split}_lr{args.lr}_ds{args.downsample}_warmup{args.warmup}_dataset{args.datasetnum}"
     run_name = f"MILKED_{current_time}_seed{args.seed}_split{args.split}_lr{args.lr}_ds{args.downsample}_warmup{args.warmup}_datasetmixed"

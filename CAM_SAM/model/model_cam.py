@@ -102,7 +102,7 @@ class network(nn.Module):
         x = x.transpose(1, 2).reshape(n, c, h, w)
         return x
 
-    def forward_proj(self, crops, n_iter=None):
+    def forward_proj(self, crops, n_iter=None, cam_only=False):
 
         global_view = crops[:2]
         local_view = crops[2:]
@@ -121,7 +121,7 @@ class network(nn.Module):
         
         return output_t, output_s
 
-    def forward(self, x,):
+    def forward(self, x, cam_only=False):
 
         x = x.type(torch.cuda.FloatTensor)
         cls_token, _x, x_aux = self.encoder.forward_features(x)

@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import numpy as np
 import sys
 import torch.distributed as dist
-sys.path.append("./wrapper/bilateralfilter/build/lib.linux-x86_64-3.8")
+sys.path.append("./CAM_SAM/model/wrapper/bilateralfilter/build/lib.linux-x86_64-cpython-310")
 from bilateralfilter import bilateralfilter, bilateralfilter_batch
 
 
