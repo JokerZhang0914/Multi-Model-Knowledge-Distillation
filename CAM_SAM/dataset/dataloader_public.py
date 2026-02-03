@@ -87,6 +87,69 @@ def load_dataset_from_folders():
 
     return np.array(img_path_list), np.array(label_list)
 
+def load_dataset_from_LD(folder_ids=None):
+    """
+    从 LDPolypVideo 数据集加载数据
+    Args:
+        folder_ids (list): 需要加载的文件夹 ID 列表。如果为 None，则加载所有可用文件夹。
+    Returns:
+        np.array(img_path_list): 所有图片的绝对路径 (numpy array)
+        np.array(label_list): 对应的分类标签 (numpy array of np.array([1.0]) or np.array([0.0]))
+    """
+    img_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/TrainValid/Images'
+    anno_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/TrainValid/Annotations'
+    
+    # 如果没指定 ID，则获取 Images 下所有目录名
+    if folder_ids is None:
+        folder_ids = [d for d in os.listdir(img_root_base) if os.path.isdir(os.path.join(img_root_base, d))]
+    
+    img_path_list = []
+    label_list = []
+    
+    print(f"--- 正在加载 LDPolypVideo 数据集 ({len(folder_ids)} 个序列) ---")
+    
+    for folder_id in folder_ids:
+        folder_name = str(folder_id)
+        img_dir = os.path.join(img_root_base, folder_name)
+        anno_dir = os.path.join(anno_root_base, folder_name)
+        
+        if not os.path.exists(img_dir) or not os.path.exists(anno_dir):
+            print(f"警告: 路径不存在，已跳过序列 {folder_name}")
+            continue
+        
+        # 遍历文件夹内的图片
+        all_images = []
+        for img_name in sorted(os.listdir(img_dir)):
+            if is_image_file(img_name):  # 使用全局的 is_image_file 函数过滤
+                img_path = os.path.join(img_dir, img_name)
+                
+                txt_name = os.path.splitext(img_name)[0] + '.txt'
+                txt_path = os.path.join(anno_dir, txt_name)
+                
+                if os.path.exists(txt_path):
+                    try:
+                        with open(txt_path, 'r') as f:
+                            content = f.read().strip()
+                            if content:
+                                # 解析逻辑：首个数字 > 0 为阳性(1.0)，否则为阴性(0.0)
+                                num_polyps = int(content.split()[0])
+                                cls_label = 1.0 if num_polyps > 0 else 0.0
+                                img_path_list.append(img_path)
+                                label_list.append(np.array([cls_label]))
+                    except Exception as e:
+                        print(f"警告: 解析 {txt_path} 失败 ({e})，跳过图像 {img_name}")
+                else:
+                    print(f"警告: 缺少注解 {txt_path}，跳过图像 {img_name}")
+        
+        if len(all_images) > 0:  # 注意：all_images 未使用，改为统计实际添加的
+            added_count = sum(1 for path in img_path_list if folder_name in path)  # 粗略统计本序列添加数量
+            print(f"  [{folder_name}] {added_count} 张 -> {img_dir}")
+    
+    if len(img_path_list) == 0:
+        print("提示: LDPolypVideo 中没有找到有效图片。")
+    
+    return np.array(img_path_list), np.array(label_list)
+
 
 def load_test_img_mask():
     """
@@ -269,9 +332,19 @@ if __name__ == "__main__":
     
     print("\n========= 正在初始化数据集 =========")
     
-    # 1. 加载训练数据 (从顶部 TRAIN_POS_DIRS / TRAIN_NEG_DIRS)
-    img_path_list_train, label_train = load_dataset_from_folders()
-    print(f"训练集加载完成: 总计 {len(img_path_list_train)} 张图片")
+    # 加载原有的公开数据集
+    img_paths, labels = load_dataset_from_folders()
+    
+    # 加载 LDPolypVideo 数据集 (例如文件夹 1 到 100)
+    ld_ids = list(range(1, 101))
+    ld_paths, ld_labels = load_dataset_from_LD(folder_ids=ld_ids)
+    
+    # 合并数据
+    img_path_list_train = np.concatenate([img_paths, ld_paths], axis=0)
+    label_train = np.concatenate([labels, ld_labels], axis=0)
+
+    # 验证拼接结果
+    print(f"拼接后总数据量: 图片路径数 {img_path_list_train.shape[0]}, 标签数 {label_train.shape[0]}")
 
     # 2. 加载测试数据 (从顶部 VAL_ROOT_DIR)
     img_path_list_test, mask_test_path = load_test_img_mask()

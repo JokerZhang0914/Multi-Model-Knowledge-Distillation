@@ -16,9 +16,9 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
 
 from model.model_cam import network
-from dataset.dataloader_public import load_dataset_from_folders, load_test_img_mask, Dataset_CAM
+from dataset.dataloader_public import load_dataset_from_folders, load_test_img_mask, load_dataset_from_LD, Dataset_CAM
 from utils import evaluate, imutils, optimizer,imutils2
-from utils.pyutils import AverageMeter, format_tabs, setup_logger
+from utils.pyutils import AverageMeter, format_tabs, setup_logger, cal_eta
 from utils.camutils import cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2, crop_from_roi_neg
 from model.losses import CTCLoss_neg, DenseEnergyLoss, DiceLoss, get_masked_ptc_loss, get_seg_loss_update, get_energy_loss
 from model.PAR import PAR
@@ -44,7 +44,7 @@ def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
     avg_meter = AverageMeter()
 
     with torch.no_grad():
-        for _, data in tqdm(enumerate(data_loader), total=len(data_loader), ncols=100, ascii=" >="):
+        for _, data in tqdm(enumerate(data_loader), total=len(data_loader), desc="validate", leave=True):
             idx += 1
             # 解包数据：图片名、输入图像、像素级标签(Mask)、图像级分类标签
             img_name, inputs, labels, cls_label = data
@@ -122,13 +122,14 @@ def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
                 grid_pseudo_gt_aux = imutils2.tensorboard_label_solo(labels=pseudo_gts_aux)
                 
                 # 写入 TensorBoard
-                writer.add_image("val/images", grid_imgs, global_step=n_iter)           # 输入图像
-                writer.add_image("val/gts", grid_true_gt, global_step=n_iter)           # 真实 Mask
-                writer.add_image("val/preds", grid_preds, global_step=n_iter)           # 分割预测 Mask
-                writer.add_image("val/pseudo_pseudo_gts", grid_pseudo_gt, global_step=n_iter)       # 主 CAM 生成的伪标签
-                writer.add_image("val/pseudo_pseudo_gts_aux", grid_pseudo_gt_aux, global_step=n_iter) # 辅助 CAM 生成的伪标签
+                if writer is not None:
+                    writer.add_image("val/images", grid_imgs, global_step=n_iter)           # 输入图像
+                    writer.add_image("val/gts", grid_true_gt, global_step=n_iter)           # 真实 Mask
+                    writer.add_image("val/preds", grid_preds, global_step=n_iter)           # 分割预测 Mask
+                    writer.add_image("val/pseudo_pseudo_gts", grid_pseudo_gt, global_step=n_iter)       # 主 CAM 生成的伪标签
+                    writer.add_image("val/pseudo_pseudo_gts_aux", grid_pseudo_gt_aux, global_step=n_iter) # 辅助 CAM 生成的伪标签
 
-            # (可选) 保存特定的 CAM 结果到本地文件 (代码被注释)
+            # (可选) 保存特定的 CAM 结果到本地文件
             # valid_label = torch.nonzero(cls_label[0])[:, 0]
             # out_cam = torch.squeeze(resized_cam)[valid_label]
             # np.save(os.path.join(cfg.work_dir.pred_dir, name[0]+'.npy'), {"keys":valid_label.cpu().numpy(), "cam":out_cam.cpu().numpy()})
@@ -148,9 +149,10 @@ def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
     cam_aux_score = evaluate.scores(gts, cams_aux, num_classes=args.num_classes)
 
     # 记录标量指标到 TensorBoard
-    writer.add_scalars('val/loss', { "cls_loss": cls_score.item()}, global_step=n_iter)
-    writer.add_scalars('val/dice', { "dice": dice_mean}, global_step=n_iter)
-    writer.add_scalars('val/hd95', { "hd95": hd95_mean}, global_step=n_iter)
+    if writer is not None:
+        writer.add_scalar('val/cls_loss', cls_score, global_step=n_iter)
+        writer.add_scalar('val/dice', dice_mean, global_step=n_iter)
+        writer.add_scalar('val/hd95', hd95_mean, global_step=n_iter)
 
     # 恢复模型到训练模式
     model.train()
@@ -172,7 +174,7 @@ def train(args=None):
     time0 = datetime.datetime.now()
     time0 = time0.replace(microsecond=0)
 
-    img_path_list_train, label_train = load_dataset_from_folders()
+    img_path_list_train, label_train = load_dataset_from_LD()
     img_path_list_test, mask_test_path = load_test_img_mask()
 
     train_dataset = Dataset_CAM(
@@ -228,8 +230,11 @@ def train(args=None):
     device = torch.device(args.local_rank)
     param_groups = model.get_param_groups()
     model.to(device) # 将模型移动到 GPU
-    if args.local_rank==0:
+    
+    writer = None
+    if args.local_rank == 0:
         writer = SummaryWriter(args.tb_dir)
+
     optim = getattr(optimizer, args.optimizer)(
         params=[
             {
@@ -271,7 +276,7 @@ def train(args=None):
     loss_layer = DenseEnergyLoss(weight=1e-7, sigma_rgb=15, sigma_xy=100, scale_factor=0.5)
     
     # 裁剪数量配置
-    ncrops = 10
+    ncrops = args.crop_nums
     # 对比标记对比损失 (Contrastive Token Contrast Loss)
     CTC_loss = CTCLoss_neg(ncrops=ncrops, temp=args.temp).cuda()
     # Dice 损失 (用于分割)
@@ -352,7 +357,7 @@ def train(args=None):
         
         # 课程学习策略 (Curriculum Learning):
         # 训练后期 (>=12000 iters) 使用主 CAM 生成的标签，前期使用辅助 CAM 标签
-        if n_iter >= 12000:
+        if n_iter >= 15000:
             supervison_mask = refined_pseudo_label
         else:
             supervison_mask = refined_pseudo_label_aux
@@ -390,7 +395,7 @@ def train(args=None):
             'cls_loss_aux': cls_loss_aux.item(),
             'seg_loss': seg_loss.item(),
             'dice_loss': dice_loss.item(),
-            'cls_score': cls_score.item(),
+            'cls_score': cls_score,
         })
 
         # 梯度清零、反向传播、参数更新
@@ -398,16 +403,71 @@ def train(args=None):
         loss.backward()
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # 梯度裁剪 (此处被注释)
         optim.step()
+        # 100 record tensorboard
+        if (n_iter + 1) % args.log_iters == 0:
+            preds = torch.argmax(segs,dim=1,).cpu().numpy().astype(np.int16)
+            refined_gts = refined_pseudo_label.cpu().numpy().astype(np.int16)
+            refined_gts_aux = refined_pseudo_label_aux.cpu().numpy().astype(np.int16)
+            grid_imgs, grid_cam = imutils2.tensorboard_image(imgs=inputs.clone(), cam=valid_cam,nrow=4)
+            _, grid_cam_aux = imutils2.tensorboard_image(imgs=inputs.clone(), cam=valid_cam_aux,nrow=4)
+
+            grid_preds = imutils2.tensorboard_label(labels=preds,nrow=4)
+            grid_refined_gt = imutils2.tensorboard_label(labels=refined_gts,nrow=4)
+            grid_refined_gt_aux = imutils2.tensorboard_label(labels=refined_gts_aux,nrow=4)
+
+            if writer is not None:
+                writer.add_image("train/images", grid_imgs, global_step=n_iter)
+                writer.add_image("train/preds", grid_preds, global_step=n_iter)
+                writer.add_image("train/pseudo_pseudo_gts", grid_refined_gt, global_step=n_iter)
+                writer.add_image("train/pseudo_pseudo_gts_aux", grid_refined_gt_aux, global_step=n_iter)
+
+                #writer.add_image("train/pseudo_irn_gts", grid_irn_gt, global_step=n_iter)
+                writer.add_image("cam/valid_cams", grid_cam, global_step=n_iter)
+                writer.add_image("cam/aux_cams", grid_cam_aux, global_step=n_iter)
+
+        if writer is not None:
+            writer.add_scalar('train/seg_loss', seg_loss.item(), global_step=n_iter)
+            writer.add_scalar('train/dice_loss', dice_loss.item(), global_step=n_iter)
+            writer.add_scalar('train/cls_loss', cls_loss.item(), global_step=n_iter)
+            writer.add_scalar('train/total_loss', loss.item(), global_step=n_iter)
+            writer.add_scalar('train/reg_loss', reg_loss.item(), global_step=n_iter)
+            writer.add_scalar('train/ptc_loss', ptc_loss.item(), global_step=n_iter)
+            writer.add_scalar('train/ctc_loss', ctc_loss.item(), global_step=n_iter)
+
+        if (n_iter + 1) % args.log_iters == 0:
+
+            delta, eta = cal_eta(time0, n_iter + 1, args.max_iters)
+            cur_lr = optim.param_groups[0]['lr']
+
+            if args.local_rank == 0:
+                logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, ctc_loss: %.4f, seg_loss: %.4f,dice_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('ctc_loss'), avg_meter.pop('seg_loss'), avg_meter.pop('dice_loss')))
+
+        if (n_iter + 1) % args.eval_iters == 0:
+            val_cls_score, tab_results, dice_mean, hd95_mean = validate(model=model, data_loader=val_loader,n_iter=n_iter, args=args,writer=writer)
+            if args.local_rank == 0:
+                logging.info("val cls score: %.6f" % (val_cls_score))
+                logging.info("val dice: %.6f" % (dice_mean))
+                logging.info("val hd95 %.6f" % (hd95_mean))
+                logging.info("\n"+tab_results)
+                
+        if (n_iter + 1)% args.save_iters == 0:
+            ckpt_name = os.path.join(args.ckpt_dir, "model_iter_%d.pth" % (n_iter + 1))
+            if args.local_rank == 0:
+                logging.info('Validating...')
+                if args.save_ckpt:
+                    torch.save(model.state_dict(), ckpt_name)
+    return True
 
 
 def get_args():
     parser = argparse.ArgumentParser(description='CAM Training')
-    parser.add_argument("--batch_size", default=32, type=int)
+    parser.add_argument("--batch_size", default=8, type=int)
     parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
     parser.add_argument("--num_classes", default=2, type=int, help="number of classes")
     parser.add_argument("--crop_size", default=448, type=int, help="crop_size in training")
-    parser.add_argument("--local_crop_size", default=64, type=int, help="crop_size for local view")
+    parser.add_argument("--local_crop_size", default=112, type=int, help="crop_size for local view")
     parser.add_argument("--ignore_index", default=255, type=int, help="random index")
+    parser.add_argument("--crop_nums", default=10, type=int)
 
     parser.add_argument("--pretrained", default=True, type=bool, help="use imagenet pretrained weights")
 
@@ -417,15 +477,16 @@ def get_args():
 
     parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
     parser.add_argument("--lr", default=1e-5, type=float, help="learning rate")
-    parser.add_argument("--warmup_lr", default=1e-7, type=float, help="warmup_lr")
+    parser.add_argument("--warmup_lr", default=1e-6, type=float, help="warmup_lr")
     parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay")
     parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
     parser.add_argument("--power", default=0.9, type=float, help="power factor for poly scheduler")
 
-    parser.add_argument("--max_iters", default=18000, type=int, help="max training iters")
-    parser.add_argument("--log_iters", default=200, type=int, help=" logging iters")
-    parser.add_argument("--eval_iters", default=2000, type=int, help="validation iters")
-    parser.add_argument("--warmup_iters", default=1500, type=int, help="warmup_iters")
+    parser.add_argument("--max_iters", default=2000, type=int, help="max training iters")
+    parser.add_argument("--log_iters", default=20, type=int, help=" logging iters")
+    parser.add_argument("--eval_iters", default=200, type=int, help="validation iters")
+    parser.add_argument("--warmup_iters", default=150, type=int, help="warmup_iters")
+    parser.add_argument("--save_iters", default=250, type=int)
 
     parser.add_argument("--high_thre", default=0.78, type=float, help="high_bkg_score")
     parser.add_argument("--low_thre", default=0.25, type=float, help="low_bkg_score")
@@ -440,25 +501,21 @@ def get_args():
 
     parser.add_argument("--temp", default=0.1, type=float, help="temp")
     parser.add_argument("--momentum", default=0.99, type=float, help="momentum")
-    parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
+    parser.add_argument("--aux_layer", default=-2, type=int, help="aux_layer")
 
-    parser.add_argument("--seed", default=0, type=int, help="fix random seed")
+    parser.add_argument("--seed", default=22, type=int, help="fix random seed")
     parser.add_argument("--save_ckpt", default=True, help="fix random seed")
 
-    parser.add_argument("--local_rank", default=0, type=int, help="local_rank")
+    parser.add_argument("--local_rank", default=int(os.environ.get('LOCAL_RANK', 0)), type=int, help="local_rank")
     parser.add_argument("--num_workers", default=8, type=int, help="num_workers")
     parser.add_argument('--backend', default='nccl')
     return parser.parse_args()
 
 if __name__ == "__main__":
     
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12345'
-    os.environ['RANK'] = '0'
-    os.environ['WORLD_SIZE'] = '1'
     args = get_args()
 
-    timestamp = "{0:%Y-%m-%d-%H-%M-%S-%f}".format(datetime.datetime.now())
+    timestamp = "{0:%Y-%m%d-%H%M-%S}".format(datetime.datetime.now())
     args.work_dir = os.path.join(args.work_dir, timestamp)
     args.ckpt_dir = os.path.join(args.work_dir, "checkpoints")
     args.pred_dir = os.path.join(args.work_dir, "predictions")

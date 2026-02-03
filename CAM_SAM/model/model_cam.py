@@ -121,15 +121,36 @@ class network(nn.Module):
         
         return output_t, output_s
 
-    def forward(self, x, cam_only=False):
-
+    def forward(self, x, crops=None, n_iter=None, cam_only=False):
         x = x.type(torch.cuda.FloatTensor)
+        # 获取特征：cls_token, 特征图 _x, 以及辅助特征 x_aux
         cls_token, _x, x_aux = self.encoder.forward_features(x)
 
         h, w = x.shape[-2] // self.encoder.patch_size, x.shape[-1] // self.encoder.patch_size
+        _x4 = self.to_2D(_x, h, w) # 转换为 (B, C, H, w)
 
-        _x4 = self.to_2D(_x, h, w)
+        # 1. 计算 CAM (Class Activation Maps)
+        # 通常使用卷积分类器在特征图上滑动得到
+        cam = F.conv2d(_x4, self.classifier.weight)
+        cam_aux = F.conv2d(_x4, self.aux_classifier.weight)
 
+        # 如果只需要 CAM (用于 multi_scale_cam2)
+        if cam_only:
+            return cam_aux, cam
+
+        # 2. 计算分割输出
         seg = self.decoder(_x4)
-        
-        return seg
+
+        # 3. 计算分类 Logits (对 token 或全局池化后的特征)
+        cls = self.pooling(cam, (1, 1))
+        cls = cls.view(-1, self.num_classes - 1)
+        cls_aux = self.pooling(cam_aux, (1, 1))
+        cls_aux = cls_aux.view(-1, self.num_classes - 1)
+
+        # 4. 如果提供了 crops，则计算用于对比学习的 CTC 输出
+        if crops is not None:
+            out_t, out_s = self.forward_proj(crops, n_iter)
+            return cls, seg, _x4, cls_aux, out_t, out_s
+
+        # 验证阶段 (validate 函数) 需要的 4 个返回值
+        return cls, seg, cam, cam_aux
