@@ -187,6 +187,51 @@ def load_test_img_mask():
 
     return img_path_list, label_path_list
 
+def load_dataset_from_LD_test(start_id=101, max_id=160):
+    """
+    加载 LDPolypVideo 测试集 (用于单纯的分类能力验证 val2)
+    仿照 test.py 的硬编码路径和正负例判断逻辑。
+    """
+    img_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Images'
+    anno_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Annotations'
+    
+    img_path_list = []
+    label_list = []
+    
+    print(f"--- 正在加载 LDPolypVideo 测试集 (Folders {start_id} to {max_id}) ---")
+    
+    for folder_id in range(start_id, max_id + 1):
+        folder_name = str(folder_id)
+        img_dir = os.path.join(img_root_base, folder_name)
+        anno_dir = os.path.join(anno_root_base, folder_name)
+
+        # 跳过不存在的文件夹
+        if not os.path.exists(img_dir) or not os.path.exists(anno_dir):
+            continue
+
+        for filename in os.listdir(img_dir):
+            if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                img_path = os.path.join(img_dir, filename)
+                txt_name = os.path.splitext(filename)[0] + '.txt'
+                txt_path = os.path.join(anno_dir, txt_name)
+
+                if os.path.exists(txt_path):
+                    try:
+                        with open(txt_path, 'r') as f:
+                            content = f.read().strip()
+                            if content:
+                                # 获取息肉数量
+                                num_polyps = int(content.split()[0])
+                                # 二值化逻辑：>0 为正例 (1.0)，否则为负例 (0.0)
+                                label = 1.0 if num_polyps > 0 else 0.0
+                                
+                                img_path_list.append(img_path)
+                                label_list.append(np.array([label], dtype=np.float32))
+                    except Exception as e:
+                        print(f"[Error] Failed to read label for {filename}: {e}")
+                        
+    print(f"[*] Total test images loaded: {len(img_path_list)}")
+    return np.array(img_path_list), np.array(label_list)
 
 class Dataset_CAM(Dataset):
     def __init__(self,
@@ -278,7 +323,7 @@ class Dataset_CAM(Dataset):
     def __getitem__(self, index):
         img_item_path = self.img_path[index]
         
-        if self.type == 'val':
+        if self.type in ['val', 'val2']:
             img_name = os.path.basename(img_item_path).split('.')[0]
 
         try:
@@ -326,6 +371,25 @@ class Dataset_CAM(Dataset):
                 cls_label = np.array([0.0], dtype=np.float32)
             
             return img_name, image, seg_mask, cls_label
+        
+        elif self.type == 'val2':
+            cls_label = self.label_path[index]
+            
+            # 为了适配 validate2 函数中期望获取 cls_label[:, 1] 的多类别结构
+            # 若 num_classes=2 且 cls_label 只有1维 [0.0] 或 [1.0]，则将其转换为 one-hot 形式
+            if len(cls_label) == 1 and self.num_classes == 2:
+                new_label = np.zeros(2, dtype=np.float32)
+                if cls_label[0] > 0.5:
+                    new_label[1] = 1.0  # 阳性
+                else:
+                    new_label[0] = 1.0  # 阴性
+                cls_label = new_label
+
+            # 因为仅验证分类，缺少真实的 Mask，所以返回全0的 dummy mask 占位
+            # 保证网络能通过 (img_name, inputs, labels, cls_label) 格式正常解包
+            dummy_mask = np.zeros((image.shape[1], image.shape[2]), dtype=np.float32)
+            
+            return img_name, image, dummy_mask, cls_label
 
         
 if __name__ == "__main__":

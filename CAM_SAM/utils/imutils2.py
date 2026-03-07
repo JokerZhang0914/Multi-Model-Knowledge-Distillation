@@ -157,8 +157,15 @@ def tensorboard_attn2(attns=None, size=[224,224], n_pixs=[0.0, 0.3, 0.6, 0.9], n
     return grid_attns
 
 def tensorboard_label(labels=None,nrow=4):
-    ## labels
-    labels_cmap = encode_cmap(np.squeeze(labels))
+    if getattr(labels, 'ndim', len(np.shape(labels))) == 4:
+        labels = np.squeeze(labels, axis=1)
+        
+    # 不要直接用 np.squeeze(labels)，直接传入 [B, H, W] 给 encode_cmap
+    labels_cmap = encode_cmap(labels)
+    
+    # 防御性编程：如果处理完后变成了 3 维 [H, W, C] (比如输入本身就是单张图)，手动补全 Batch 维度
+    if labels_cmap.ndim == 3:
+        labels_cmap = np.expand_dims(labels_cmap, axis=0)
     labels_cmap = torch.from_numpy(labels_cmap).permute([0, 3, 1, 2])
     grid_labels = torchvision.utils.make_grid(tensor=labels_cmap, nrow=nrow)
 

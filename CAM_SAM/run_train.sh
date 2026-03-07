@@ -12,17 +12,20 @@ export MASTER_PORT=12345
 GPUS_PER_NODE=4          # 总卡数
 BATCH_SIZE=2             # 建议设为 8，这样总 batch 就是 8*4=32
 CROP_SIZE=448            # 训练裁剪尺寸
-CROP_NUMS=10             # 
+CROP_NUMS=10              
 
-MAX_ITERS=20000
-LOG_ITERS=200
-EVAL_ITERS=1000
+MAX_ITERS=10000
+LOG_ITERS=500
+EVAL_ITERS=500
 WARMUP_ITERS=1500
-SAVE_ITERS=4000
+SAVE_ITERS=2000
 
-SEED=22
+SEED=33
 LR=6e-5
 TEMP=0.5
+
+# LOCAL_WEIGHTS=/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/cam/2026-0304-1412-12/checkpoints/model_iter_4000.pth
+LOCAL_WEIGHTS=/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/cam/2026-0304-0020-09/checkpoints/model_iter_4000.pth
 
 
 # --- 3. 启动命令 ---
@@ -36,6 +39,11 @@ torchrun --nproc_per_node=$GPUS_PER_NODE \
     --log_iters $LOG_ITERS \
     --eval_iters $EVAL_ITERS \
     --warmup_iters $WARMUP_ITERS \
+    --save_iters $SAVE_ITERS \
     --seed $SEED \
     --temp $TEMP \
-    --backbone vit_base_patch16_224 
+    --backbone vit_base_patch16_224 \
+    --bkg_thre 0.45 \
+    --high_thre 0.75 \
+    --low_thre 0.25 \
+    --weights $LOCAL_WEIGHTS \

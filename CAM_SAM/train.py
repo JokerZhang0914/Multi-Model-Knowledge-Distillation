@@ -8,15 +8,17 @@ import os
 import pyparsing
 import torch.nn.functional as F
 import torch.distributed as dist
+from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score
 
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
+from torch.nn.modules.loss import CrossEntropyLoss
 from tqdm import tqdm
 
 from model.model_cam import network
-from dataset.dataloader_public import load_dataset_from_folders, load_test_img_mask, load_dataset_from_LD, Dataset_CAM
+from dataset.dataloader_public import load_dataset_from_folders, load_test_img_mask, load_dataset_from_LD, load_dataset_from_LD_test, Dataset_CAM
 from utils import evaluate, imutils, optimizer,imutils2
 from utils.pyutils import AverageMeter, format_tabs, setup_logger, cal_eta
 from utils.camutils import cam_to_label, cam_to_roi_mask2, multi_scale_cam2, label_to_aff_mask, refine_cams_with_bkg_v2, crop_from_roi_neg
@@ -31,6 +33,62 @@ def setup_seed(seed):
     torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+def get_args():
+    parser = argparse.ArgumentParser(description='CAM Training')
+    parser.add_argument("--batch_size", default=8, type=int)
+    parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
+    parser.add_argument("--num_classes", default=2, type=int, help="number of classes")
+    parser.add_argument("--crop_size", default=448, type=int, help="crop_size in training")
+    parser.add_argument("--local_crop_size", default=112, type=int, help="crop_size for local view")
+    parser.add_argument("--ignore_index", default=255, type=int, help="random index")
+    parser.add_argument("--crop_nums", default=10, type=int)
+
+    parser.add_argument("--pretrained", default=True, type=bool, help="use imagenet pretrained weights")
+
+    parser.add_argument("--work_dir", default="runs/cam", type=str, help="work_dir")
+    parser.add_argument("--spg", default=2, type=int, help="samples_per_gpu")
+    parser.add_argument("--scales", default=(0.5, 0.7), help="random rescale in training")
+
+    parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
+    parser.add_argument("--lr", default=1e-5, type=float, help="learning rate")
+    parser.add_argument("--warmup_lr", default=1e-6, type=float, help="warmup_lr")
+    parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay")
+    parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
+    parser.add_argument("--power", default=0.9, type=float, help="power factor for poly scheduler")
+
+    parser.add_argument("--max_iters", default=2000, type=int, help="max training iters")
+    parser.add_argument("--log_iters", default=20, type=int, help=" logging iters")
+    parser.add_argument("--eval_iters", default=200, type=int, help="validation iters")
+    parser.add_argument("--warmup_iters", default=150, type=int, help="warmup_iters")
+    parser.add_argument("--save_iters", default=2500, type=int)
+
+    parser.add_argument("--high_thre", default=0.55, type=float, help="high_bkg_score")
+    parser.add_argument("--low_thre", default=0.15, type=float, help="low_bkg_score")
+    parser.add_argument("--bkg_thre", default=0.25, type=float, help="bkg_score")
+    parser.add_argument("--cam_scales", default=(1.0, 0.5, 0.75,1.25, 1.5), help="multi_scales for cam")
+
+    parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
+    parser.add_argument("--w_ctc", default=0.0, type=float, help="w_ctc")
+    parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
+    parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
+    parser.add_argument("--w_dice", default=0.1, type=float, help="w_dice")
+
+    parser.add_argument("--temp", default=0.5, type=float, help="temp")
+    parser.add_argument("--momentum", default=0.99, type=float, help="momentum")
+    parser.add_argument("--aux_layer", default=-3, type=int, help="aux_layer")
+
+    parser.add_argument("--seed", default=32, type=int, help="fix random seed")
+    parser.add_argument("--save_ckpt", default=True, help="fix random seed")
+
+    parser.add_argument("--local_rank", default=int(os.environ.get('LOCAL_RANK', 0)), type=int, help="local_rank")
+    parser.add_argument("--num_workers", default=8, type=int, help="num_workers")
+    parser.add_argument('--backend', default='nccl')
+
+    # 添加本地权重路径参数
+    parser.add_argument("--weights", default=None, type=str, help="Path to local weights (.pth)")
+
+    return parser.parse_args()
 
 def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
     preds, gts, cams, cams_aux = [], [], [], []
@@ -74,6 +132,9 @@ def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
             # 使用多尺度策略生成 CAM，增强其鲁棒性
             # _cams: 主分类头的 CAM, _cams_aux: 辅助分类头的 CAM
             _cams, _cams_aux = multi_scale_cam2(model, inputs, args.cam_scales)
+            if idx == 1:  # 只打印第一个 batch 看看
+                print(f"--- Debug: Raw CAM Max: {_cams.max().item():.4f}, Mean: {_cams.mean().item():.4f} ---")
+                logging.info(f"--- Debug: Raw CAM Max: {_cams.max().item():.4f}, Mean: {_cams.mean().item():.4f} ---")
             
             # 处理主 CAM：插值回原始标签尺寸
             resized_cam = F.interpolate(_cams, size=labels.shape[1:], mode='bilinear', align_corners=False)
@@ -150,7 +211,7 @@ def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
 
     # 记录标量指标到 TensorBoard
     if writer is not None:
-        writer.add_scalar('val/cls_loss', cls_score, global_step=n_iter)
+        writer.add_scalar('val/cls_score', cls_score, global_step=n_iter)
         writer.add_scalar('val/dice', dice_mean, global_step=n_iter)
         writer.add_scalar('val/hd95', hd95_mean, global_step=n_iter)
 
@@ -163,6 +224,84 @@ def validate(model=None, data_loader=None, args=None, n_iter=1, writer=None):
     # 返回指标供日志打印
     return cls_score, tab_results, dice_mean, hd95_mean
 
+def validate2(model=None, data_loader=None, args=None, n_iter=1, writer=None):
+    """
+    专门验证模型分类能力的函数，仿照 test.py 的逻辑
+    只保留 ACC, AP, AUC 指标
+    """
+    model.eval()
+    
+    y_true = []
+    y_scores = [] 
+    y_preds = []
+
+    with torch.no_grad():
+        for _, data in tqdm(enumerate(data_loader), total=len(data_loader), desc="validate2 (Classification)", leave=True):
+            img_name, inputs, labels, cls_label = data
+            
+            inputs = inputs.cuda()
+            cls_label = cls_label.cuda()
+
+            # 保持与验证时一致的输入尺寸
+            inputs = F.interpolate(inputs, size=[args.crop_size, args.crop_size], mode='bilinear', align_corners=False)
+
+            # 模型前向传播，仅使用分类头输出 cls
+            cls, segs, _, _ = model(inputs,)
+
+            # 提取阳性概率与预测类别 (兼容 1 维和 2 维输出)
+            if cls.shape[1] == 1:
+                probs = torch.sigmoid(cls)[:, 0]
+            else:
+                probs = torch.sigmoid(cls)[:, 1]
+                
+            preds = (probs > 0.5).long()
+
+            # 提取真实标签 (兼容 1 维和 2 维标签)
+            if cls_label.shape[1] == 1:
+                labels_true = cls_label[:, 0]
+            else:
+                labels_true = cls_label[:, 1]
+            
+            y_true.extend(labels_true.cpu().numpy())
+            y_scores.extend(probs.cpu().numpy())
+            y_preds.extend(preds.cpu().numpy())
+
+    y_true = np.array(y_true)
+    y_scores = np.array(y_scores)
+    y_preds = np.array(y_preds)
+
+    # 仿照 test.py 计算指标
+    if len(np.unique(y_true)) < 2:
+        # print("[Warning] 测试数据仅包含单个类别（全为0或全为1），无法计算 AUC 和 AP，将设为 0.0。")
+        auc = 0.0
+        ap = 0.0
+    else:
+        try:
+            auc = roc_auc_score(y_true, y_scores)
+        except ValueError:
+            auc = 0.0
+        
+        try:
+            ap = average_precision_score(y_true, y_scores)
+        except Exception as e:
+            # print(f"[Warning] AP calculation error: {e}")
+            ap = 0.0
+
+    # 计算 ACC
+    acc = accuracy_score(y_true, y_preds)
+
+    # 记录到 TensorBoard
+    if writer is not None:
+        writer.add_scalar('val_classification/AUC', auc, global_step=n_iter)
+        writer.add_scalar('val_classification/AP', ap, global_step=n_iter)
+        writer.add_scalar('val_classification/ACC', acc, global_step=n_iter)
+    print("val2 classification -> ACC: %.4f | AP: %.4f | AUC: %.4f" % (acc, ap, auc))
+
+    # 恢复模型到训练模式
+    model.train()
+
+    return acc, ap, auc
+
 def train(args=None):
     # 设置当前进程使用的 GPU 设备 ID
     torch.cuda.set_device(args.local_rank)
@@ -174,12 +313,36 @@ def train(args=None):
     time0 = datetime.datetime.now()
     time0 = time0.replace(microsecond=0)
 
-    img_path_list_train, label_train = load_dataset_from_LD()
+    # 加载原有的公开数据集
+    img_paths, labels = load_dataset_from_folders()
+    
+    # 加载 LDPolypVideo 数据集 (例如文件夹 1 到 100)
+    ld_paths, ld_labels = load_dataset_from_LD()
+    
+    # 合并数据
+    img_path_list_train = np.concatenate([img_paths, ld_paths], axis=0)
+    label_train = np.concatenate([labels, ld_labels], axis=0)
+    
     img_path_list_test, mask_test_path = load_test_img_mask()
 
+    val2_img_paths, val2_labels = load_dataset_from_LD_test(start_id=101, max_id=110)
+
+    # train_dataset = Dataset_CAM(
+    #     img_path_list_train,
+    #     label_train,
+    #     type='train',           # 训练模式
+    #     resize_range=[512, 640],# 随机缩放范围
+    #     rescale_range=args.scales,
+    #     crop_size=args.crop_size, # 裁剪尺寸 (如 448)
+    #     img_fliplr=True,        # 开启水平翻转增强
+    #     ignore_index=255,       # 忽略的标签索引
+    #     num_classes=args.num_classes,
+    #     aug=True,               # 开启数据增强
+    # )
+
     train_dataset = Dataset_CAM(
-        img_path_list_train,
-        label_train,
+        ld_paths,
+        ld_labels,
         type='train',           # 训练模式
         resize_range=[512, 640],# 随机缩放范围
         rescale_range=args.scales,
@@ -197,6 +360,14 @@ def train(args=None):
         aug=False,              # 关闭数据增强
         ignore_index=args.ignore_index,
         num_classes=args.num_classes,
+    )
+    # 2. 传入 Dataset_CAM，指定 type 为 'val2'
+    val2_dataset = Dataset_CAM(
+        val2_img_paths,
+        val2_labels,         # 此处传入的是标签数组而不是路径
+        type='val2', 
+        aug=False,
+        num_classes=args.num_classes
     )
 
     # 创建分布式采样器，确保不同 GPU 读取不同的数据子集
@@ -219,6 +390,11 @@ def train(args=None):
                             pin_memory=False,
                             drop_last=False)
     
+    val2_loader = DataLoader(val2_dataset, 
+                             batch_size=8, 
+                             shuffle=False, 
+                             num_workers=args.num_workers)
+
     model = network(
         backbone=args.backbone,       # 如 vit_base_patch16_224
         num_classes=args.num_classes, # 类别数
@@ -227,6 +403,24 @@ def train(args=None):
         aux_layer=args.aux_layer      # 辅助层的层级索引
     )
 
+    if args.weights is not None:
+        if os.path.exists(args.weights):
+            logging.info(f"Loading local weights from {args.weights}")
+            # map_location 确保在分布式训练时正确映射到对应的 GPU
+            state_dict = torch.load(args.weights, map_location=lambda storage, loc: storage.cuda(args.local_rank))
+            
+            # 如果权重文件是由 DistributedDataParallel 保存的，需要去除 'module.' 前缀
+            if 'model' in state_dict: # 兼容某些保存了整个 dict 的情况
+                state_dict = state_dict['model']
+            
+            new_state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            
+            # strict=False 可以在微调时允许部分层不匹配（如分类头）
+            msg = model.load_state_dict(new_state_dict, strict=False)
+            logging.info(f"Checkpoint loaded with message: {msg}")
+        else:
+            logging.error(f"No weights file found at {args.weights}")
+
     device = torch.device(args.local_rank)
     param_groups = model.get_param_groups()
     model.to(device) # 将模型移动到 GPU
@@ -234,6 +428,19 @@ def train(args=None):
     writer = None
     if args.local_rank == 0:
         writer = SummaryWriter(args.tb_dir)
+        raw_dict = vars(args).copy()
+        hparam_dict = {}
+
+        for k, v in raw_dict.items():
+            if isinstance(v, (int, float, str, bool, torch.Tensor)):
+                hparam_dict[k] = v
+            else:
+                # tuple / list / None 等全部转为字符串
+                hparam_dict[k] = str(v)
+
+        metric_dict = {"hparam/init": 0.0}
+
+        writer.add_hparams(hparam_dict, metric_dict)
 
     optim = getattr(optimizer, args.optimizer)(
         params=[
@@ -348,16 +555,16 @@ def train(args=None):
 
         # D. 分割损失 (Segmentation Loss) & 正则化损失 (Reg Loss)
         # 生成高质量伪标签用于监督分割分支
-        valid_cam_aux,_ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=0.35, high_thre=0.5, low_thre=0.3, ignore_index=args.ignore_index)
+        valid_cam_aux,_ = cam_to_label(cams_aux.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         valid_cam, _ = cam_to_label(cams.detach(), cls_label=cls_label, img_box=img_box, ignore_mid=True, bkg_thre=args.bkg_thre, high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index)
         
         # 使用 PAR 模块利用图像颜色信息细化 CAM 边界
         refined_pseudo_label = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_cam, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
-        refined_pseudo_label_aux = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_cam_aux, cls_labels=cls_label,  high_thre=0.55, low_thre=0.3, ignore_index=args.ignore_index, img_box=img_box, )
+        refined_pseudo_label_aux = refine_cams_with_bkg_v2(par, inputs_denorm, cams=valid_cam_aux, cls_labels=cls_label,  high_thre=args.high_thre, low_thre=args.low_thre, ignore_index=args.ignore_index, img_box=img_box, )
         
         # 课程学习策略 (Curriculum Learning):
         # 训练后期 (>=12000 iters) 使用主 CAM 生成的标签，前期使用辅助 CAM 标签
-        if n_iter >= 15000:
+        if n_iter >= 12000:
             supervison_mask = refined_pseudo_label
         else:
             supervison_mask = refined_pseudo_label_aux
@@ -365,8 +572,10 @@ def train(args=None):
         segs = F.interpolate(segs, size=supervison_mask.shape[1:], mode='bilinear', align_corners=False)
         
         # 计算交叉熵分割损失
-        seg_loss = get_seg_loss_update(segs, supervison_mask.type(torch.long), ignore_index=args.ignore_index)
-        
+        # seg_loss = get_seg_loss_update(segs, supervison_mask.type(torch.long), ignore_index=args.ignore_index)
+        ce_loss = CrossEntropyLoss(ignore_index=args.ignore_index, reduction='mean')
+        # seg_loss = get_seg_loss_update(segs, supervison_mask.type(torch.long), ignore_index=args.ignore_index)
+        seg_loss = ce_loss(segs, supervison_mask.type(torch.long))
         # 计算能量损失 (Reg Loss)，利用 RGB 相似性约束分割边界
         reg_loss = get_energy_loss(img=inputs, logit=segs, label=supervison_mask, img_box=img_box, loss_layer=loss_layer)
 
@@ -375,11 +584,17 @@ def train(args=None):
 
         # E. 总损失加权求和 (Total Loss)
         # Warmup 策略: 前 1500 iter 不计算分割和正则损失，先让分类器收敛
-        if n_iter <= 1500:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + 0.0 * seg_loss + 0.0 * reg_loss
-        else:
-            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + args.w_seg * seg_loss + args.w_reg * reg_loss + args.w_dice * dice_loss
+        # if n_iter <= 4500:
+        #     loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + 0.0 * seg_loss + 0.0 * reg_loss
+        # else:
+        #     loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + args.w_seg * seg_loss + args.w_reg * reg_loss + args.w_dice * dice_loss
 
+        if n_iter <= 2000:
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + 0.0 * ptc_loss + 0.0 * ctc_loss + 0.0 * seg_loss + 0.0 * reg_loss
+        elif n_iter <= 6000:
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + 0.0 * seg_loss + 0.0 * reg_loss + 0.0 * dice_loss
+        else:
+            loss = 1.0 * cls_loss + 1.0 * cls_loss_aux + args.w_ptc * ptc_loss + args.w_ctc * ctc_loss + args.w_seg * seg_loss + 0.0 * reg_loss + args.w_dice * dice_loss
         # ==============================================================
         # 7. 反向传播与日志记录
         # ==============================================================
@@ -404,7 +619,7 @@ def train(args=None):
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # 梯度裁剪 (此处被注释)
         optim.step()
         # 100 record tensorboard
-        if (n_iter + 1) % args.log_iters == 0:
+        if (n_iter + 1) % 100 == 0:
             preds = torch.argmax(segs,dim=1,).cpu().numpy().astype(np.int16)
             refined_gts = refined_pseudo_label.cpu().numpy().astype(np.int16)
             refined_gts_aux = refined_pseudo_label_aux.cpu().numpy().astype(np.int16)
@@ -443,14 +658,16 @@ def train(args=None):
                 logging.info("Iter: %d; Elasped: %s; ETA: %s; LR: %.3e; cls_loss: %.4f, cls_loss_aux: %.4f, ptc_loss: %.4f, ctc_loss: %.4f, seg_loss: %.4f,dice_loss: %.4f..." % (n_iter + 1, delta, eta, cur_lr, avg_meter.pop('cls_loss'), avg_meter.pop('cls_loss_aux'), avg_meter.pop('ptc_loss'), avg_meter.pop('ctc_loss'), avg_meter.pop('seg_loss'), avg_meter.pop('dice_loss')))
 
         if (n_iter + 1) % args.eval_iters == 0:
+            val2_acc, val2_ap, val2_auc = validate2(model=model, data_loader=val2_loader, n_iter=n_iter, args=args, writer=writer)
             val_cls_score, tab_results, dice_mean, hd95_mean = validate(model=model, data_loader=val_loader,n_iter=n_iter, args=args,writer=writer)
             if args.local_rank == 0:
                 logging.info("val cls score: %.6f" % (val_cls_score))
                 logging.info("val dice: %.6f" % (dice_mean))
                 logging.info("val hd95 %.6f" % (hd95_mean))
+                logging.info("val2 classification -> ACC: %.4f | AP: %.4f | AUC: %.4f" % (val2_acc, val2_ap, val2_auc))
                 logging.info("\n"+tab_results)
                 
-        if (n_iter + 1)% args.save_iters == 0:
+        if (n_iter + 1)% args.save_iters == 0 or (n_iter + 1) == args.max_iters:
             ckpt_name = os.path.join(args.ckpt_dir, "model_iter_%d.pth" % (n_iter + 1))
             if args.local_rank == 0:
                 logging.info('Validating...')
@@ -458,58 +675,6 @@ def train(args=None):
                     torch.save(model.state_dict(), ckpt_name)
     return True
 
-
-def get_args():
-    parser = argparse.ArgumentParser(description='CAM Training')
-    parser.add_argument("--batch_size", default=8, type=int)
-    parser.add_argument("--backbone", default='vit_base_patch16_224', type=str, help="vit_base_patch16_224")
-    parser.add_argument("--num_classes", default=2, type=int, help="number of classes")
-    parser.add_argument("--crop_size", default=448, type=int, help="crop_size in training")
-    parser.add_argument("--local_crop_size", default=112, type=int, help="crop_size for local view")
-    parser.add_argument("--ignore_index", default=255, type=int, help="random index")
-    parser.add_argument("--crop_nums", default=10, type=int)
-
-    parser.add_argument("--pretrained", default=True, type=bool, help="use imagenet pretrained weights")
-
-    parser.add_argument("--work_dir", default="runs/cam", type=str, help="work_dir")
-    parser.add_argument("--spg", default=5, type=int, help="samples_per_gpu")
-    parser.add_argument("--scales", default=(0.6, 0.8), help="random rescale in training")
-
-    parser.add_argument("--optimizer", default='PolyWarmupAdamW', type=str, help="optimizer")
-    parser.add_argument("--lr", default=1e-5, type=float, help="learning rate")
-    parser.add_argument("--warmup_lr", default=1e-6, type=float, help="warmup_lr")
-    parser.add_argument("--wt_decay", default=1e-2, type=float, help="weights decay")
-    parser.add_argument("--betas", default=(0.9, 0.999), help="betas for Adam")
-    parser.add_argument("--power", default=0.9, type=float, help="power factor for poly scheduler")
-
-    parser.add_argument("--max_iters", default=2000, type=int, help="max training iters")
-    parser.add_argument("--log_iters", default=20, type=int, help=" logging iters")
-    parser.add_argument("--eval_iters", default=200, type=int, help="validation iters")
-    parser.add_argument("--warmup_iters", default=150, type=int, help="warmup_iters")
-    parser.add_argument("--save_iters", default=250, type=int)
-
-    parser.add_argument("--high_thre", default=0.78, type=float, help="high_bkg_score")
-    parser.add_argument("--low_thre", default=0.25, type=float, help="low_bkg_score")
-    parser.add_argument("--bkg_thre", default=0.45, type=float, help="bkg_score")
-    parser.add_argument("--cam_scales", default=(1.0, 0.5, 0.75,1.25, 1.5), help="multi_scales for cam")
-
-    parser.add_argument("--w_ptc", default=0.2, type=float, help="w_ptc")
-    parser.add_argument("--w_ctc", default=0.0, type=float, help="w_ctc")
-    parser.add_argument("--w_seg", default=0.1, type=float, help="w_seg")
-    parser.add_argument("--w_reg", default=0.05, type=float, help="w_reg")
-    parser.add_argument("--w_dice", default=0.2, type=float, help="w_dice")
-
-    parser.add_argument("--temp", default=0.1, type=float, help="temp")
-    parser.add_argument("--momentum", default=0.99, type=float, help="momentum")
-    parser.add_argument("--aux_layer", default=-2, type=int, help="aux_layer")
-
-    parser.add_argument("--seed", default=22, type=int, help="fix random seed")
-    parser.add_argument("--save_ckpt", default=True, help="fix random seed")
-
-    parser.add_argument("--local_rank", default=int(os.environ.get('LOCAL_RANK', 0)), type=int, help="local_rank")
-    parser.add_argument("--num_workers", default=8, type=int, help="num_workers")
-    parser.add_argument('--backend', default='nccl')
-    return parser.parse_args()
 
 if __name__ == "__main__":
     

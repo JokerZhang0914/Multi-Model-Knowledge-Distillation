@@ -59,7 +59,8 @@ class network(nn.Module):
 
         self.in_channels = [self.encoder.embed_dim] * 4 if hasattr(self.encoder, "embed_dim") else [self.encoder.embed_dims[-1]] * 4 
 
-        self.pooling = F.adaptive_max_pool2d
+        self.pooling = F.adaptive_avg_pool2d
+        # self.pooling = F.adaptive_max_pool2d
 
         # self.decoder = decoder.LargeFOV(in_planes=self.in_channels[-1], out_planes=self.num_classes,)
         self.decoder = decoder.ASPP(in_planes=self.in_channels[-1], out_planes=self.num_classes,)
