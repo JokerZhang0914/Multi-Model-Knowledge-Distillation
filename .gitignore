@@ -28,6 +28,7 @@ TestResults.xml
 *.tif
 *.mp4
 *.avi
+*.gif
 
 # excel files
 *.xlsx
