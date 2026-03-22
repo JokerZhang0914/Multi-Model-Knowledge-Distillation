@@ -65,7 +65,7 @@ def gather_align_Img(root_dir='', split=0.7):
     数据准备函数：读取CSV/Excel表格中的标签信息，并与实际文件路径进行匹配对齐。
     最后按比例划分为训练集和测试集。
     """
-    data_path = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data'
+    data_path = '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data'
 
     # raw_label = np.concatenate([
     #     np.array(pd.read_csv("E:/AAA_joker/本科毕设/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/label_zhongliu.csv")),

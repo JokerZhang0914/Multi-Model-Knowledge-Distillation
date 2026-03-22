@@ -51,6 +51,7 @@ checkpoints/
 *.pth
 
 debug.py
+train0.py
 
 config/
 

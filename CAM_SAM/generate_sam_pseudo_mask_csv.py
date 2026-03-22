@@ -23,12 +23,12 @@ from utils import (
 )
 
 SOURCE_ROOTS = [
-    # "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned",
-    "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu",
-    "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集mix",
+    # "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned",
+    "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu",
+    "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集mix",
 ]
 
-PSEUDO_MASK_ROOT = "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/PseudoMask"
+PSEUDO_MASK_ROOT = "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/PseudoMask"
 
 PATIENT_DIR_PATTERN = re.compile(r"^[tf]_patient\d+$")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -41,15 +41,15 @@ def get_args():
     parser.add_argument("--positive_class_index", default=1, type=int)
     parser.add_argument(
         "--encoder_ckpt",
-        default="/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_encoder.pth",
+        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_encoder.pth",
         type=str,
     )
     parser.add_argument(
         "--student_ckpt",
-        default="/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_student.pth",
+        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_student.pth",
         type=str,
     )
-    parser.add_argument("--medsam_ckpt", default="/home/zhaokaizhang/code/medsam_vit_b.pth", type=str)
+    parser.add_argument("--medsam_ckpt", default="/mnt/nas1/disk03/zhaokaizhang/code/medsam_vit_b.pth", type=str)
     parser.add_argument("--medsam_model_type", default="vit_b", choices=["vit_b", "vit_l", "vit_h", "default"])
     parser.add_argument("--csv_output", default=os.path.join(os.getcwd(), "sam_pseudo_mask_pairs.csv"), type=str)
 

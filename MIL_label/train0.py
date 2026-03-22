@@ -1,6 +1,6 @@
 """
-/home/zhaokaizhang/.conda/envs/mmked/bin/python /home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/train.py --device 0,1 --epochs 20 --dataset_downsampling 1
-tensorboard --logdir /home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs_mil_label --port 6006"""
+/mnt/nas1/disk03/zhaokaizhang/.conda/envs/mmked/bin/python /mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/train.py --device 0,1 --epochs 20 --dataset_downsampling 1
+tensorboard --logdir /mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs_mil_label --port 6006"""
 
 import argparse
 import os
@@ -807,7 +807,7 @@ def get_parser():
     # parser.add_argument('--PLMergeWeight', nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5', required=True)
     parser.add_argument('--teacher_loss_weight', default=[1.0, 1.0], nargs='+', type=float, help='weight of multiple teacher, like: 1.0 1.0')
     parser.add_argument('--PLMergeWeight', default=[0.5, 0.5], nargs='+', type=float, help='weight of merge teachers pseudo label, like: 0.5 0.5')
-    parser.add_argument('--save_dir', default='/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/checkpoints', type=str, help='Directory to save checkpoints')
+    parser.add_argument('--save_dir', default='/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/checkpoints', type=str, help='Directory to save checkpoints')
     parser.add_argument('--resume_mode', default='none', choices=['none', 'best', 'latest'], 
                         help='Resume training from: "none" (start fresh), "best" (best AUC), or "latest" (last epoch)')
     parser.add_argument('--resume_path', default='', type=str, 
@@ -833,7 +833,7 @@ if __name__ == '__main__':
     utils.setup_runtime(seed=42, cuda_dev_id=list(np.unique(args.modeldevice + args.device)))
     print(name)
 
-    writer = SummaryWriter('/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/runs_mil_label/%s'%name)
+    writer = SummaryWriter('/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/runs_mil_label/%s'%name)
     writer.add_text('args', " \n".join(['%s %s' % (arg, getattr(args, arg)) for arg in vars(args)]))
 
     # model

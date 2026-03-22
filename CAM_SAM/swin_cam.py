@@ -31,7 +31,7 @@ def get_args():
     parser.add_argument("--patch_norm", action="store_true", default=True)
     parser.add_argument("--use_checkpoint", action="store_true")
 
-    parser.add_argument("--ckpt", default="/home/zhaokaizhang/code/test_code/runs/cam_swin/2026-0311-1805_gradcampp/checkpoint/best_swin.pth", type=str)
+    parser.add_argument("--ckpt", default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_swin/2026-0311-1805_gradcampp/checkpoint/best_swin.pth", type=str)
     parser.add_argument("--min_id", default=140, type=int)
     parser.add_argument("--max_id", default=145, type=int)
     parser.add_argument("--out_dir", default="runs/cam/swin", type=str)

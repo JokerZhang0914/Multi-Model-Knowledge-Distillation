@@ -46,7 +46,7 @@ def get_args():
     parser.add_argument("--patch_norm", action="store_true", default=True)
     parser.add_argument("--use_checkpoint", action="store_true")
 
-    parser.add_argument("--ckpt", default='/home/zhaokaizhang/code/test_code/runs/swin_train/2026-0310-1804-09/best_swin.pth', type=str, help="Swin 预训练权重路径")
+    parser.add_argument("--ckpt", default='/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/swin_train/2026-0310-1804-09/best_swin.pth', type=str, help="Swin 预训练权重路径")
     return parser.parse_args()
 
 

@@ -32,20 +32,20 @@ def get_args():
     parser.add_argument("--crop_size", default=512, type=int)
     parser.add_argument(
         "--encoder_ckpt",
-        default="/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_encoder.pth",
+        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_encoder.pth",
         type=str,
     )
     parser.add_argument(
         "--student_ckpt",
-        default="/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_student.pth",
+        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_student.pth",
         type=str,
     )
     parser.add_argument("--sam_model_type", default="vit_h", choices=["vit_b", "vit_l", "vit_h", "default"])
-    parser.add_argument("--sam_ckpt", default="/home/zhaokaizhang/code/sam_vit_h_4b8939.pth", type=str, help="path to SAM checkpoint (.pth)")
+    parser.add_argument("--sam_ckpt", default="/mnt/nas1/disk03/zhaokaizhang/code/sam_vit_h_4b8939.pth", type=str, help="path to SAM checkpoint (.pth)")
     parser.add_argument("--medsam_model_type", default="vit_b", choices=["vit_b", "vit_l", "vit_h", "default"])
-    parser.add_argument("--medsam_ckpt", default="/home/zhaokaizhang/code/medsam_vit_b.pth", type=str, help="path to MedSAM checkpoint (.pth)")
+    parser.add_argument("--medsam_ckpt", default="/mnt/nas1/disk03/zhaokaizhang/code/medsam_vit_b.pth", type=str, help="path to MedSAM checkpoint (.pth)")
     parser.add_argument("--sammed2d_model_type", default="vit_b", choices=["vit_b", "vit_l", "vit_h", "default"])
-    parser.add_argument("--sammed2d_ckpt", default="/home/zhaokaizhang/code/sam-med2d_b.pth", type=str, help="path to SAM-Med2D checkpoint (.pth)")
+    parser.add_argument("--sammed2d_ckpt", default="/mnt/nas1/disk03/zhaokaizhang/code/sam-med2d_b.pth", type=str, help="path to SAM-Med2D checkpoint (.pth)")
     parser.add_argument("--sammed2d_image_size", default=256, type=int, help="SAM-Med2D image_size")
     parser.add_argument("--sammed2d_encoder_adapter", action="store_true", default=True, help="SAM-Med2D encoder_adapter")
     parser.add_argument("--min_id", default=1, type=int)

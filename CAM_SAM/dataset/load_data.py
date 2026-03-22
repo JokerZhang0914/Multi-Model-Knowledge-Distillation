@@ -13,12 +13,12 @@ def load_dataset_from_folders():
     读取硬编码的文件夹路径加载数据集。
     """
     TRAIN_POS_DIRS = [
-        "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/1_hyperplastic_aligned",
-        "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/2_adenomatous_aligned"
+        "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/1_hyperplastic_aligned",
+        "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/2_adenomatous_aligned"
     ]
 
     TRAIN_NEG_DIRS = [
-        "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned"
+        "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned"
     ]
 
     img_path_list = []
@@ -80,7 +80,7 @@ def load_CVC_img_mask(min_id=1, max_id=612):
     """
     加载测试集：原图和 Mask
     """
-    VAL_ROOT_DIR = "/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/CVC-ClinicDB"
+    VAL_ROOT_DIR = "/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/CVC-ClinicDB"
 
     root_dir = VAL_ROOT_DIR
     if not os.path.exists(root_dir):
@@ -140,8 +140,8 @@ def load_kvasir_img_mask():
     加载 Kvasir-SEG：支持多个根目录，每个目录下包含 images/ 与 masks/ 子文件夹
     """
     ROOT_DIRS = [
-        '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/kvasir-seg'#,
-        # '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/kvasir-seg/sessile-main-Kvasir-SEG'
+        '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/kvasir-seg'#,
+        # '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/kvasir-seg/sessile-main-Kvasir-SEG'
     ]
 
     img_path_list = []
@@ -180,9 +180,9 @@ def load_report(patient_prefixes=("f_", "t_"), recursive=False):
     仅返回图片路径，不包含标签。
     """
     REPORT_ROOT_DIRS = [
-        '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned',
-        '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集mix',
-        '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu'
+        '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集/0_normal_aligned',
+        '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/公开数据集mix',
+        '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/肿瘤医院_1/dataset_aligned_zhongliu'
     ]
 
     img_paths = []

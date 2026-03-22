@@ -26,8 +26,8 @@ class FinetuneDataset(Dataset):
             folder_ids (list): 文件夹 ID 列表 (e.g. [1, 2, 5, ...])
             transform: 图片预处理
         """
-        self.img_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/TrainValid/Images'
-        self.anno_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/TrainValid/Annotations'
+        self.img_root_base = '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/TrainValid/Images'
+        self.anno_root_base = '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/TrainValid/Annotations'
         self.transform = transform
         self.samples = [] 
 
@@ -287,7 +287,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--config',
         type=str,
-        default='/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/config/finetune_config.yaml',
+        default='/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/config/finetune_config.yaml',
         help='Path to config yaml file'
     )
     parser.add_argument('--epochs', type=int, default=20)

@@ -19,8 +19,8 @@ class SingleImageDataset(Dataset):
         遍历从 start_id (默认101) 到 max_id 的所有文件夹，读取图片和对应标签
         """
         # 硬编码你的路径
-        self.img_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Images'
-        self.anno_root_base = '/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Annotations'
+        self.img_root_base = '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Images'
+        self.anno_root_base = '/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/LDPolypVideo/Test/Annotations'
         self.transform = transform
         self.samples = [] # 存储 (path, label)
 
@@ -400,7 +400,7 @@ def parse_args():
     parser.add_argument(
         '--config',
         type=str,
-        default='/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/config/test_config.yaml',
+        default='/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/MIL_label/config/test_config.yaml',
         help='Path to config yaml file'
     )
 

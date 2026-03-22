@@ -45,11 +45,11 @@ def get_args():
     parser.add_argument("--gpu", default="0", type=str)
     
     # 预训练权重加载 (可选)
-    # parser.add_argument("--encoder_ckpt", default='/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1445_layercam/checkpoint/best_resnet_encoder.pth', type=str, help="初始 Encoder 权重路径")
-    # parser.add_argument("--student_ckpt", default='/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1445_layercam/checkpoint/best_resnet_student.pth', type=str, help="初始 Student 权重路径")
+    # parser.add_argument("--encoder_ckpt", default='/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1445_layercam/checkpoint/best_resnet_encoder.pth', type=str, help="初始 Encoder 权重路径")
+    # parser.add_argument("--student_ckpt", default='/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1445_layercam/checkpoint/best_resnet_student.pth', type=str, help="初始 Student 权重路径")
 
-    parser.add_argument("--encoder_ckpt", default='/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_encoder.pth', type=str, help="初始 Encoder 权重路径")
-    parser.add_argument("--student_ckpt", default='/home/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_student.pth', type=str, help="初始 Student 权重路径")
+    parser.add_argument("--encoder_ckpt", default='/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_encoder.pth', type=str, help="初始 Encoder 权重路径")
+    parser.add_argument("--student_ckpt", default='/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/cam_res/2026-0311-1757_gradcampp/checkpoint/best_resnet_student.pth', type=str, help="初始 Student 权重路径")
     
     return parser.parse_args()
 

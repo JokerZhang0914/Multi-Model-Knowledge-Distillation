@@ -22,7 +22,6 @@ except ImportError:
 
 # ==========================================
 # Part 1: NystromAttention & TransMIL Model
-# (直接内嵌，确保脚本独立性)
 # ==========================================
 
 def get_roc_figure(labels, preds):

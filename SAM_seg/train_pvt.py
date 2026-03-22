@@ -19,7 +19,13 @@ if PVT_ROOT not in sys.path:
     sys.path.insert(0, PVT_ROOT)
 
 from lib.pvt import PolypPVT
-from dataset import CsvPolypDataset, prepare_train_val_pairs
+from dataset import (
+    CsvPolypDataset,
+    load_CVC_img_mask,
+    load_kvasir_img_mask,
+    prepare_train_val_pairs,
+    read_csv_pairs,
+)
 
 
 def get_args():
@@ -30,7 +36,14 @@ def get_args():
     parser.add_argument("--batch_size", default=16, type=int)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--split", default=0.2, type=float, help="validation split ratio")
-    parser.add_argument("--downsample", default=0.9, type=float, help="random downsample ratio in (0,1]")
+    parser.add_argument(
+        "--val_dataset",
+        default="cvc",
+        type=str,
+        choices=["split", "cvc", "kvasir"],
+        help="validation source: split from csv, or external CVC/Kvasir dataset",
+    )
+    parser.add_argument("--downsample", default=1, type=float, help="random downsample ratio in (0,1]")
     parser.add_argument("--trainsize", default=352, type=int)
     
     parser.add_argument("--augmentation", default=False, help="enable random flip/rotation like official")
@@ -44,11 +57,11 @@ def get_args():
     parser.add_argument("--save_epochs", default=8, type=int)
     parser.add_argument(
         "--csv_path",
-        default="/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/sam_pseudo_mask_pairs.csv",
+        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/sam_pseudo_mask_pairs.csv",
         type=str,
     )
     parser.add_argument("--pvt_pretrained", 
-                        default="/home/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/SAM_seg/model/Polyp-PVT/PolypPVT_pre.pth",
+                        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/seg_pvt/2026-0318-1333_polyp_pvt/checkpoint/best_pvt.pth",
                          type=str, help="optional path to pth")
     parser.add_argument("--resume", default="", type=str, help="optional checkpoint to resume")
     parser.add_argument("--work_dir", default="runs/seg_pvt", type=str)
@@ -110,17 +123,13 @@ class Optimizer:
         self.device = device
         self.writer = writer
 
-        train_pairs, val_pairs, stats = prepare_train_val_pairs(
-            csv_path=args.csv_path,
-            split=args.split,
-            seed=args.seed,
-            downsample=args.downsample,
-        )
+        train_pairs, val_pairs, stats = self._build_train_val_pairs()
 
         logging.info(
             f"[*] Total pairs: {stats['original_total']} | "
             f"AfterDownsample: {stats['after_downsample']} | "
-            f"Train: {stats['train_size']} | Val: {stats['val_size']}"
+            f"Train: {stats['train_size']} | Val: {stats['val_size']} | "
+            f"ValSource: {stats.get('val_source', 'split')}"
         )
 
         train_dataset = CsvPolypDataset(train_pairs, args.trainsize, args.augmentation)
@@ -167,6 +176,51 @@ class Optimizer:
             self._resume(args.resume)
 
         self.writer.add_hparams(vars(args), {"hparam/init": 0.0})
+
+    def _build_train_val_pairs(self):
+        if self.args.val_dataset == "split":
+            train_pairs, val_pairs, stats = prepare_train_val_pairs(
+                csv_path=self.args.csv_path,
+                split=self.args.split,
+                seed=self.args.seed,
+                downsample=self.args.downsample,
+            )
+            stats["val_source"] = "split"
+            return train_pairs, val_pairs, stats
+
+        if self.args.downsample <= 0 or self.args.downsample > 1:
+            raise ValueError("--downsample must be in (0, 1].")
+
+        train_pairs = read_csv_pairs(self.args.csv_path)
+        original_total = len(train_pairs)
+        rng = np.random.RandomState(self.args.seed)
+        if self.args.downsample < 1.0:
+            keep = int(round(original_total * self.args.downsample))
+            keep = max(1, keep)
+            keep = min(original_total, keep)
+            indices = rng.choice(original_total, size=keep, replace=False)
+            train_pairs = [train_pairs[i] for i in indices]
+
+        perm = np.random.RandomState(self.args.seed + 1).permutation(len(train_pairs))
+        train_pairs = [train_pairs[i] for i in perm]
+
+        if self.args.val_dataset == "cvc":
+            val_images, val_masks = load_CVC_img_mask()
+        else:
+            val_images, val_masks = load_kvasir_img_mask()
+
+        val_pairs = list(zip(val_images, val_masks))
+        if len(val_pairs) == 0:
+            raise RuntimeError(f"No valid image/mask pairs found for --val_dataset {self.args.val_dataset}")
+
+        stats = {
+            "original_total": original_total,
+            "after_downsample": len(train_pairs),
+            "train_size": len(train_pairs),
+            "val_size": len(val_pairs),
+            "val_source": self.args.val_dataset,
+        }
+        return train_pairs, val_pairs, stats
 
     def _resume(self, ckpt_path):
         if not os.path.isfile(ckpt_path):
