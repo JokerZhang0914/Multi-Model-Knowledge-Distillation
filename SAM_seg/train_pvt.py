@@ -2,12 +2,10 @@ import argparse
 import datetime
 import logging
 import os
-import random
 import sys
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -26,6 +24,7 @@ from dataset import (
     prepare_train_val_pairs,
     read_csv_pairs,
 )
+from utils import clip_gradient, dice_iou_from_logits, set_seed, setup_logger, structure_loss
 
 
 def get_args():
@@ -57,64 +56,15 @@ def get_args():
     parser.add_argument("--save_epochs", default=8, type=int)
     parser.add_argument(
         "--csv_path",
-        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/data/sam_pseudo_mask_pairs.csv",
+        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/sam_pseudo_mask_pairs.csv",
         type=str,
     )
     parser.add_argument("--pvt_pretrained", 
-                        default="/mnt/nas1/disk03/zhaokaizhang/code/test_code/runs/seg_pvt/2026-0318-1333_polyp_pvt/checkpoint/best_pvt.pth",
+                        default="/mnt/nas1/disk03/zhaokaizhang/EndoKED/zero_shot_Sota_53PolypPVT.pth",
                          type=str, help="optional path to pth")
     parser.add_argument("--resume", default="", type=str, help="optional checkpoint to resume")
     parser.add_argument("--work_dir", default="runs/seg_pvt", type=str)
     return parser.parse_args()
-
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-
-def setup_logger(work_dir):
-    log_file = os.path.join(work_dir, "train_pvt.log")
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
-    )
-
-
-def structure_loss(pred, mask):
-    weit = 1 + 5 * torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
-    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduction="none")
-    wbce = (weit * wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
-
-    pred_sigmoid = torch.sigmoid(pred)
-    inter = ((pred_sigmoid * mask) * weit).sum(dim=(2, 3))
-    union = ((pred_sigmoid + mask) * weit).sum(dim=(2, 3))
-    wiou = 1 - (inter + 1) / (union - inter + 1)
-    return (wbce + wiou).mean()
-
-
-def clip_gradient(optimizer, grad_clip):
-    for group in optimizer.param_groups:
-        for param in group["params"]:
-            if param.grad is not None:
-                param.grad.data.clamp_(-grad_clip, grad_clip)
-
-
-def dice_iou_from_logits(logits, masks, threshold=0.5, eps=1e-6):
-    probs = torch.sigmoid(logits)
-    preds = (probs > threshold).float()
-    masks = (masks > 0.5).float()
-
-    inter = (preds * masks).sum(dim=(1, 2, 3))
-    union = ((preds + masks) > 0).float().sum(dim=(1, 2, 3))
-    dice = (2 * inter + eps) / (preds.sum(dim=(1, 2, 3)) + masks.sum(dim=(1, 2, 3)) + eps)
-    iou = (inter + eps) / (union + eps)
-    return float(dice.mean().item()), float(iou.mean().item())
 
 
 class Optimizer:
@@ -282,7 +232,7 @@ class Optimizer:
         dice_all = []
         iou_all = []
         with torch.no_grad():
-            for images, masks in tqdm(self.val_loader, desc="[Val] Epoch {epoch + 1}/{self.args.epochs}"):
+            for images, masks in tqdm(self.val_loader, desc=f"[Val] Epoch {epoch + 1}/{self.args.epochs}"):
                 images = images.to(self.device, non_blocking=True).float()
                 masks = masks.to(self.device, non_blocking=True).float()
                 p1, p2 = self.model(images)
@@ -343,7 +293,7 @@ def main():
     os.makedirs(os.path.join(args.work_dir, "checkpoint"), exist_ok=True)
     os.makedirs(os.path.join(args.work_dir, "tensorboard_log"), exist_ok=True)
 
-    setup_logger(args.work_dir)
+    setup_logger(args.work_dir, "train_pvt.log")
     writer = SummaryWriter(os.path.join(args.work_dir, "tensorboard_log"))
 
     logging.info(f"[*] args: {args}")

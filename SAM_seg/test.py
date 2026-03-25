@@ -8,8 +8,8 @@ from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
 
-from dataset import load_CVC_img_mask, load_kvasir_img_mask
-from utils import evaluate_metrics_with_type, dice_ci95
+from dataset import get_test_pairs, open_l, open_rgb
+from utils import dice_ci95, evaluate_metrics_with_type, load_model_weights_flexible
 
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,35 +47,6 @@ def get_args():
     return parser.parse_args()
 
 
-def _load_model_weights(model, ckpt_path, device):
-    if not ckpt_path:
-        return
-    if not os.path.isfile(ckpt_path):
-        raise FileNotFoundError(f"weights file not found: {ckpt_path}")
-
-    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-        state_dict = checkpoint["model_state_dict"]
-    elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-    else:
-        state_dict = checkpoint
-
-    cleaned = {}
-    for k, v in state_dict.items():
-        nk = k
-        if nk.startswith("module."):
-            nk = nk[7:]
-        if nk.startswith("model."):
-            nk = nk[6:]
-        cleaned[nk] = v
-
-    try:
-        model.load_state_dict(cleaned, strict=True)
-    except RuntimeError:
-        model.load_state_dict(cleaned, strict=False)
-
-
 def _build_model(args, device):
     if args.model != "polyp-pvt":
         raise ValueError(f"Unsupported model: {args.model}")
@@ -83,91 +54,9 @@ def _build_model(args, device):
     if pvt_pretrained and not os.path.isfile(pvt_pretrained):
         raise FileNotFoundError(f"--pvt_pretrained not found: {pvt_pretrained}")
     model = PolypPVT(pretrained_path=pvt_pretrained).to(device)
-    _load_model_weights(model, args.weights, device)
+    load_model_weights_flexible(model, args.weights, device)
     model.eval()
     return model
-
-
-def _get_test_pairs(testset):
-    if testset == "kvasir":
-        img_paths, mask_paths = load_kvasir_img_mask()
-    else:
-        img_paths, mask_paths = load_CVC_img_mask()
-    pairs = list(zip(img_paths, mask_paths))
-    if len(pairs) == 0:
-        raise RuntimeError(f"No valid image/mask pairs found for testset={testset}")
-    return pairs
-
-
-def _open_rgb(path):
-    try:
-        with open(path, "rb") as f:
-            return Image.open(f).convert("RGB")
-    except Exception:
-        if path.lower().endswith((".tif", ".tiff")):
-            return _open_tif_fallback(path, mode="RGB")
-        raise
-
-
-def _open_l(path):
-    try:
-        with open(path, "rb") as f:
-            return Image.open(f).convert("L")
-    except Exception:
-        if path.lower().endswith((".tif", ".tiff")):
-            return _open_tif_fallback(path, mode="L")
-        raise
-
-
-def _to_uint8(arr):
-    arr = np.asarray(arr)
-    if arr.dtype == np.uint8:
-        return arr
-    arr = arr.astype(np.float32)
-    vmin = float(arr.min())
-    vmax = float(arr.max())
-    if vmax <= vmin:
-        return np.zeros(arr.shape, dtype=np.uint8)
-    arr = (arr - vmin) / (vmax - vmin)
-    return (arr * 255.0).clip(0, 255).astype(np.uint8)
-
-
-def _open_tif_fallback(path, mode="RGB"):
-    arr = None
-
-    # 优先 tifffile 读取复杂 TIFF
-    try:
-        import tifffile
-
-        arr = tifffile.imread(path)
-    except Exception:
-        arr = None
-
-    # tifffile 失败时再尝试 imageio
-    if arr is None:
-        try:
-            import imageio.v2 as imageio
-
-            arr = imageio.imread(path)
-        except Exception as e:
-            raise RuntimeError(f"Failed to decode TIFF file: {path}") from e
-
-    arr = np.asarray(arr)
-    if arr.ndim == 2:
-        pil = Image.fromarray(_to_uint8(arr), mode="L")
-    elif arr.ndim == 3:
-        if arr.shape[0] in (1, 3, 4) and arr.shape[-1] not in (1, 3, 4):
-            arr = np.transpose(arr, (1, 2, 0))
-        if arr.shape[-1] == 1:
-            pil = Image.fromarray(_to_uint8(arr[..., 0]), mode="L")
-        else:
-            if arr.shape[-1] > 3:
-                arr = arr[..., :3]
-            pil = Image.fromarray(_to_uint8(arr), mode="RGB")
-    else:
-        raise RuntimeError(f"Unsupported TIFF ndim={arr.ndim}: {path}")
-
-    return pil.convert(mode)
 
 
 def run_test(args):
@@ -177,7 +66,7 @@ def run_test(args):
         device = torch.device("cpu")
 
     model = _build_model(args, device)
-    pairs = _get_test_pairs(args.testset)
+    pairs = get_test_pairs(args.testset)
     if args.max_samples > 0:
         pairs = pairs[: args.max_samples]
 
@@ -195,8 +84,8 @@ def run_test(args):
 
     with torch.no_grad():
         for idx, (img_path, mask_path) in enumerate(tqdm(pairs, desc=f"[Test:{args.testset}]"), start=1):
-            image = _open_rgb(img_path)
-            gt = _open_l(mask_path).resize((args.trainsize, args.trainsize), Image.NEAREST)
+            image = open_rgb(img_path)
+            gt = open_l(mask_path).resize((args.trainsize, args.trainsize), Image.NEAREST)
             gt_mask = (np.array(gt) > 127).astype(np.uint8)
 
             x = preprocess(image).unsqueeze(0).to(device)
