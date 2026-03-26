@@ -16,6 +16,7 @@ from dataset import CsvPolypDataset, load_pairs_from_root, read_csv_pairs
 from utils import (
     clip_gradient,
     dice_iou_from_logits,
+    evaluate_metrics_with_type,
     load_model_weights,
     make_boundary_target,
     set_seed,
@@ -76,9 +77,23 @@ def resolve_path(path: str) -> str:
     return os.path.abspath(os.path.join(PROJECT_ROOT, path))
 
 
+def make_safe_tag(text: str) -> str:
+    tag = str(text).strip()
+    if not tag:
+        return "unknown"
+    out = []
+    for ch in tag:
+        if ch.isalnum() or ch in ("-", "_"):
+            out.append(ch)
+        else:
+            out.append("-")
+    cleaned = "".join(out).strip("-")
+    return cleaned or "unknown"
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="PIDNet-S (lightweight) polyp segmentation training")
-    parser.add_argument("--seed", default=318, type=int)
+    parser.add_argument("--seed", default=325, type=int)
     parser.add_argument("--gpu", default="0", type=str)
 
     parser.add_argument("--train_source", default="public", choices=["csv", "public"], type=str)
@@ -95,28 +110,35 @@ def get_args():
         help="used when --train_source public",
     )
     parser.add_argument(
-        "--colondb_root",
-        default="data/CVC-ColonDB",
+        "--testdataset_root",
+        default="data/seg_data/TestDataset",
         type=str,
-        help="validation dataset root, supports (images,masks) or (Original,Ground Truth)",
+        help="root for seg_data/TestDataset",
+    )
+    parser.add_argument(
+        "--val_dataset",
+        default="CVC-ColonDB",
+        type=str,
+        choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
+        help="subfolder name under --testdataset_root for validation, e.g. CVC-ColonDB/Kvasir/CVC-300",
     )
     parser.add_argument("--downsample", default=1.0, type=float, help="random downsample ratio in (0,1]")
     parser.add_argument("--trainsize", default=352, type=int)
     parser.add_argument("--augmentation", default=False, type=str2bool)
 
     parser.add_argument("--epochs", default=80, type=int)
-    parser.add_argument("--batch_size", default=12, type=int)
+    parser.add_argument("--batch_size", default=32, type=int)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--optimizer", default="SGD", choices=["SGD", "AdamW"])
-    parser.add_argument("--lr", default=1e-2, type=float)
+    parser.add_argument("--lr", default=1e-3, type=float)
     parser.add_argument("--poly_power", default=0.9, type=float)
     parser.add_argument("--weight_decay", default=5e-4, type=float)
     parser.add_argument("--momentum", default=0.9, type=float)
-    parser.add_argument("--clip", default=0.5, type=float, help="gradient clipping value")
+    parser.add_argument("--clip", default=1, type=float, help="gradient clipping value")
 
     parser.add_argument("--aux_weight", default=0.4, type=float, help="aux segmentation branch weight")
     parser.add_argument("--main_weight", default=1.0, type=float, help="main segmentation branch weight")
-    parser.add_argument("--boundary_weight", default=20.0, type=float, help="boundary BCE weight")
+    parser.add_argument("--boundary_weight", default=10.0, type=float, help="boundary BCE weight")
     parser.add_argument("--sb_weight", default=1.0, type=float, help="semantic-on-boundary weight in FullModel")
     parser.add_argument("--use_ohem", default=True, type=str2bool)
     parser.add_argument("--ohem_thresh", default=0.9, type=float)
@@ -124,11 +146,11 @@ def get_args():
     parser.add_argument("--ignore_label", default=255, type=int)
 
     parser.add_argument("--pid_pretrained", 
-                        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pidnet/2026-0324-2215_pidnet_s/checkpoint/best_pidnet_s.pth", 
+                        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pids/2026-0326-0020_csv_all/checkpoint/best_pidnet_s6313.pth", 
                         type=str, help="optional PIDNet checkpoint for init")
     parser.add_argument("--resume", default="", type=str, help="optional checkpoint to resume")
-    parser.add_argument("--save_epochs", default=8, type=int)
-    parser.add_argument("--work_dir", default="runs/seg_pid", type=str)
+    parser.add_argument("--save_epochs", default=15, type=int)
+    parser.add_argument("--work_dir", default="runs/seg_pids", type=str)
     return parser.parse_args()
 
 
@@ -177,7 +199,7 @@ class Optimizer:
         logging.info(
             f"[*] TrainSource: {stats['train_source']} | "
             f"OriginalTrain: {stats['original_total']} | AfterDownsample: {stats['after_downsample']} | "
-            f"Train: {stats['train_size']} | Val(ColonDB): {stats['val_size']}"
+            f"Train: {stats['train_size']} | Val({stats['val_name']}): {stats['val_size']}"
         )
 
         train_dataset = CsvPolypDataset(train_pairs, args.trainsize, args.augmentation)
@@ -317,26 +339,42 @@ class Optimizer:
         }
         return train_pairs, stats
 
-    def _build_colondb_val_pairs(self) -> List[Tuple[str, str]]:
-        colondb_root = _resolve_dataset_root(
-            self.args.colondb_root,
-            fallback_roots=[
-                "data/CVC-ColonDB",
-                "data/CVC_ColonDB",
-                "data/CVC-ColonDB-300",
-                "data/TestDataset/CVC-ColonDB",
-                "data/TestDataset/CVC-ColonDB/CVC-ColonDB",
-            ],
-            dataset_name="CVC-ColonDB",
-        )
-        val_pairs = load_pairs_from_root(
-            colondb_root,
-            candidates=[("images", "masks"), ("Original", "Ground Truth")],
-            name="CVC-ColonDB",
+    def _load_single_val_subset(self, root: str, subset: str) -> List[Tuple[str, str]]:
+        subset_root = os.path.join(root, subset)
+        if not os.path.isdir(subset_root):
+            raise FileNotFoundError(f"Validation subset not found: {subset_root}")
+        return load_pairs_from_root(
+            subset_root,
+            candidates=[("images", "masks"), ("image", "mask"), ("Original", "Ground Truth")],
+            name=f"TestDataset/{subset}",
             verbose=True,
             check_readable=True,
         )
-        return val_pairs
+
+    def _build_testdataset_val_pairs(self) -> Tuple[List[Tuple[str, str]], str]:
+        test_root = _resolve_dataset_root(
+            self.args.testdataset_root,
+            fallback_roots=["data/seg_data/TestDataset"],
+            dataset_name="TestDataset",
+        )
+
+        val_name = str(self.args.val_dataset).strip()
+        if not val_name:
+            raise ValueError("--val_dataset cannot be empty.")
+
+        if val_name.lower() == "all":
+            subset_names = sorted(
+                [d for d in os.listdir(test_root) if os.path.isdir(os.path.join(test_root, d))]
+            )
+            if not subset_names:
+                raise RuntimeError(f"No subsets found under {test_root}")
+            val_pairs = []
+            for subset in subset_names:
+                val_pairs.extend(self._load_single_val_subset(test_root, subset))
+            return val_pairs, "all"
+
+        val_pairs = self._load_single_val_subset(test_root, val_name)
+        return val_pairs, val_name
 
     def _build_train_val_pairs(self):
         if self.args.train_source == "csv":
@@ -347,11 +385,12 @@ class Optimizer:
         if len(train_pairs) == 0:
             raise RuntimeError("No valid training pairs found.")
 
-        val_pairs = self._build_colondb_val_pairs()
+        val_pairs, val_name = self._build_testdataset_val_pairs()
         if len(val_pairs) == 0:
-            raise RuntimeError("No valid validation pairs found from CVC-ColonDB.")
+            raise RuntimeError(f"No valid validation pairs found from TestDataset/{val_name}.")
 
         stats["val_size"] = len(val_pairs)
+        stats["val_name"] = val_name
         return train_pairs, val_pairs, stats
 
     def _resume(self, ckpt_path):
@@ -488,8 +527,7 @@ class Optimizer:
     def validate_one_epoch(self, epoch: int):
         self.model.eval()
         meters = {"total": 0.0, "sem": 0.0, "boundary": 0.0, "sb": 0.0, "acc": 0.0}
-        dice_all = []
-        iou_all = []
+        metrics = {"dice": [], "precision": [], "recall": [], "hd": [], "hd95": []}
 
         with torch.no_grad():
             for images, masks in tqdm(self.val_loader, desc=f"[Val] Epoch {epoch + 1}/{self.args.epochs}"):
@@ -506,9 +544,14 @@ class Optimizer:
 
                 main_logits = preds[-1] if isinstance(preds, (list, tuple)) else preds
                 fg_logit = self._main_binary_logit(main_logits)
-                dice, iou = dice_iou_from_logits(fg_logit, masks)
-                dice_all.append(dice)
-                iou_all.append(iou)
+                pred_mask = (torch.sigmoid(fg_logit) > 0.5).float()
+                gt_mask = (masks > 0.5).float()
+                for b in range(pred_mask.shape[0]):
+                    pred_np = pred_mask[b, 0].detach().cpu().numpy().astype(np.uint8)
+                    gt_np = gt_mask[b, 0].detach().cpu().numpy().astype(np.uint8)
+                    m = evaluate_metrics_with_type(pred_np, gt_np, type="test")
+                    for key in metrics:
+                        metrics[key].append(float(m[key]))
 
                 meters["total"] += float(loss.item())
                 meters["sem"] += float(sem_loss.item())
@@ -518,31 +561,55 @@ class Optimizer:
 
         num_batches = max(1, len(self.val_loader))
         avg = {k: v / num_batches for k, v in meters.items()}
-        val_dice = float(np.mean(dice_all)) if dice_all else 0.0
-        val_iou = float(np.mean(iou_all)) if iou_all else 0.0
+
+        metric_means = {}
+        for key in ("dice", "precision", "recall"):
+            vals = metrics[key]
+            metric_means[key] = float(np.mean(vals)) if vals else 0.0
+
+        hd_arr = np.asarray(metrics["hd"], dtype=np.float64) if metrics["hd"] else np.array([], dtype=np.float64)
+        hd95_arr = np.asarray(metrics["hd95"], dtype=np.float64) if metrics["hd95"] else np.array([], dtype=np.float64)
+
+        hd_finite = hd_arr[np.isfinite(hd_arr)]
+        hd95_finite = hd95_arr[np.isfinite(hd95_arr)]
+        metric_means["hd"] = float(hd_finite.mean()) if hd_finite.size > 0 else float("inf")
+        metric_means["hd95"] = float(hd95_finite.mean()) if hd95_finite.size > 0 else float("inf")
+        metric_means["hd_inf_cases"] = int((~np.isfinite(hd_arr)).sum()) if hd_arr.size > 0 else 0
+        metric_means["hd95_inf_cases"] = int((~np.isfinite(hd95_arr)).sum()) if hd95_arr.size > 0 else 0
 
         self.writer.add_scalar("Val/Loss", avg["total"], epoch + 1)
         self.writer.add_scalar("Val/LossSemantic", avg["sem"], epoch + 1)
         self.writer.add_scalar("Val/LossBoundary", avg["boundary"], epoch + 1)
         self.writer.add_scalar("Val/LossSB", avg["sb"], epoch + 1)
         self.writer.add_scalar("Val/PixelAcc", avg["acc"], epoch + 1)
-        self.writer.add_scalar("Val/Dice", val_dice, epoch + 1)
-        self.writer.add_scalar("Val/IoU", val_iou, epoch + 1)
-        return avg, val_dice, val_iou
+        self.writer.add_scalar("Val/Dice", metric_means["dice"], epoch + 1)
+        self.writer.add_scalar("Val/Precision", metric_means["precision"], epoch + 1)
+        self.writer.add_scalar("Val/Recall", metric_means["recall"], epoch + 1)
+        if np.isfinite(metric_means["hd"]):
+            self.writer.add_scalar("Val/HD", metric_means["hd"], epoch + 1)
+        if np.isfinite(metric_means["hd95"]):
+            self.writer.add_scalar("Val/HD95", metric_means["hd95"], epoch + 1)
+        self.writer.add_scalar("Val/HD_inf_cases", metric_means["hd_inf_cases"], epoch + 1)
+        self.writer.add_scalar("Val/HD95_inf_cases", metric_means["hd95_inf_cases"], epoch + 1)
+        return avg, metric_means
 
     def optimize(self):
         logging.info("[*] Start training PIDNet-S (lightweight) ...")
         for epoch in range(self.start_epoch, self.args.epochs):
             train_avg, lr_now, train_dice, train_iou = self.train_one_epoch(epoch)
-            val_avg, val_dice, val_iou = self.validate_one_epoch(epoch)
+            val_avg, val_metrics = self.validate_one_epoch(epoch)
+            val_dice = val_metrics["dice"]
 
             logging.info(
                 f"[Epoch {epoch + 1}/{self.args.epochs}] "
                 f"lr={lr_now:.6e} "
                 f"train_loss={train_avg['total']:.4f} (sem={train_avg['sem']:.4f}, bd={train_avg['boundary']:.4f}, sb={train_avg['sb']:.4f}, acc={train_avg['acc']:.4f}) "
                 f"val_loss={val_avg['total']:.4f} (sem={val_avg['sem']:.4f}, bd={val_avg['boundary']:.4f}, sb={val_avg['sb']:.4f}, acc={val_avg['acc']:.4f}) "
+            )
+            logging.info(
                 f"train_dice={train_dice:.4f} train_iou={train_iou:.4f} "
-                f"val_dice={val_dice:.4f} val_iou={val_iou:.4f}"
+                f"val_dice={val_metrics['dice']:.4f} val_precision={val_metrics['precision']:.4f} "
+                f"val_recall={val_metrics['recall']:.4f} val_hd95={val_metrics['hd95']:.4f}"
             )
 
             if val_dice > self.best_dice:
@@ -570,7 +637,9 @@ def main():
 
     timestamp = "{0:%Y-%m%d-%H%M}".format(datetime.datetime.now())
     base_work_dir = resolve_path(args.work_dir)
-    args.work_dir = os.path.join(base_work_dir, f"{timestamp}_pidnet_s")
+    val_tag_raw = os.path.basename(os.path.normpath(str(args.val_dataset)))
+    val_tag = make_safe_tag(val_tag_raw)
+    args.work_dir = os.path.join(base_work_dir, f"{timestamp}_{args.train_source}_{val_tag}")
     os.makedirs(args.work_dir, exist_ok=True)
     os.makedirs(os.path.join(args.work_dir, "checkpoint"), exist_ok=True)
     os.makedirs(os.path.join(args.work_dir, "tensorboard_log"), exist_ok=True)

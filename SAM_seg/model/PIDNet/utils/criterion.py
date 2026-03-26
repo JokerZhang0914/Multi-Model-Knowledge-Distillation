@@ -66,16 +66,26 @@ class OhemCrossEntropy(nn.Module):
         pixel_losses = self.criterion(score, target).contiguous().view(-1)
         mask = target.contiguous().view(-1) != self.ignore_label
 
+        # All pixels can be ignored for the SB branch (bd_label),
+        # in which case OHEM should contribute zero instead of crashing.
+        valid_count = int(mask.sum().item())
+        if valid_count == 0:
+            return score.new_tensor(0.0)
+
         tmp_target = target.clone()
         tmp_target[tmp_target == self.ignore_label] = 0
         pred = pred.gather(1, tmp_target.unsqueeze(1))
-        pred, ind = pred.contiguous().view(-1,)[mask].contiguous().sort()
-        min_value = pred[min(self.min_kept, pred.numel() - 1)]
-        threshold = max(min_value, self.thresh)
+        pred_valid = pred.contiguous().view(-1,)[mask].contiguous()
+        pred_valid, ind = pred_valid.sort()
 
-        pixel_losses = pixel_losses[mask][ind]
-        pixel_losses = pixel_losses[pred < threshold]
-        return pixel_losses.mean()
+        min_value = pred_valid[min(self.min_kept, pred_valid.numel() - 1)]
+        threshold = max(float(min_value.item()), float(self.thresh))
+
+        pixel_losses_valid = pixel_losses[mask][ind]
+        pixel_losses_ohem = pixel_losses_valid[pred_valid < threshold]
+        if pixel_losses_ohem.numel() == 0:
+            pixel_losses_ohem = pixel_losses_valid
+        return pixel_losses_ohem.mean()
 
     def forward(self, score, target):
         
@@ -142,5 +152,4 @@ if __name__ == '__main__':
         
         
         
-
 
