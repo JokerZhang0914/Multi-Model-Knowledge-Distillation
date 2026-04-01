@@ -130,7 +130,7 @@ def get_args():
     parser.add_argument("--batch_size", default=32, type=int)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--optimizer", default="SGD", choices=["SGD", "AdamW"])
-    parser.add_argument("--lr", default=1e-3, type=float)
+    parser.add_argument("--lr", default=5e-3, type=float)
     parser.add_argument("--poly_power", default=0.9, type=float)
     parser.add_argument("--weight_decay", default=5e-4, type=float)
     parser.add_argument("--momentum", default=0.9, type=float)
@@ -146,7 +146,7 @@ def get_args():
     parser.add_argument("--ignore_label", default=255, type=int)
 
     parser.add_argument("--pid_pretrained", 
-                        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pids/2026-0326-0020_csv_all/checkpoint/best_pidnet_s6313.pth", 
+                        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pids/2026-0326-1155_public_CVC-ColonDB/checkpoint/best_pidnet_s6769.pth", 
                         type=str, help="optional PIDNet checkpoint for init")
     parser.add_argument("--resume", default="", type=str, help="optional checkpoint to resume")
     parser.add_argument("--save_epochs", default=15, type=int)
@@ -280,7 +280,8 @@ class Optimizer:
             )
 
         self.start_epoch = 0
-        self.best_dice = -1.0
+        ##########################
+        self.best_dice = 0.67
         if args.resume:
             self._resume(args.resume)
 
