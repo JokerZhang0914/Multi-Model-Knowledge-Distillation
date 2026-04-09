@@ -15,6 +15,15 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+SAM_SEG_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(SAM_SEG_ROOT, ".."))
+UNET_ROOT = THIS_DIR
+if SAM_SEG_ROOT not in sys.path:
+    sys.path.insert(0, SAM_SEG_ROOT)
+if UNET_ROOT not in sys.path:
+    sys.path.insert(1, UNET_ROOT)
+
 from dataset import CsvPolypDataset, load_pairs_from_root, read_csv_pairs
 from utils import (
     clip_gradient,
@@ -23,13 +32,6 @@ from utils import (
     set_seed,
     setup_logger,
 )
-
-
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
-UNET_ROOT = os.path.join(THIS_DIR, "model", "UNet")
-if UNET_ROOT not in sys.path:
-    sys.path.insert(0, UNET_ROOT)
 
 from unet import UNet
 

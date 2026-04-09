@@ -14,7 +14,9 @@ from utils import (
     decode_pidnet_outputs,
     dice_ci95,
     evaluate_metrics_with_type,
+    get_state_dict_from_checkpoint,
     load_model_weights_flexible,
+    normalize_state_dict_keys,
 )
 
 
@@ -37,7 +39,10 @@ from models.pidnet import PIDNet
 
 def get_args():
     parser = argparse.ArgumentParser(description="Segmentation test script")
-    parser.add_argument("--model", default="pvt", choices=["pvt", "unet", "pidnet"], type=str)
+    parser.add_argument(
+        "--model", 
+        default="unet", 
+        choices=["pvt", "unet", "pidnet"], type=str)
     parser.add_argument(
         "--testdataset_root",
         default="data/seg_data/TestDataset",
@@ -46,13 +51,14 @@ def get_args():
     )
     parser.add_argument(
         "--val_dataset",
-        default="CVC-ColonDB",
+        # default="ETIS-LaribPolypDB",
+        default='CVC-ClinicDB',
         type=str,
         choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
         help="subfolder under --testdataset_root, e.g. CVC-ColonDB/Kvasir/CVC-300; use 'all' for all subsets",
     )
     parser.add_argument("--type", default="test", choices=["test", "val"], type=str, help="eval mode")
-    parser.add_argument("--gpu", default="1", type=str)
+    parser.add_argument("--gpu", default="2", type=str)
     parser.add_argument("--trainsize", default=352, type=int)
     parser.add_argument("--threshold", default=0.5, type=float)
     parser.add_argument("--max_samples", default=0, type=int, help="0 means evaluate all")
@@ -61,7 +67,7 @@ def get_args():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--weights",
-        default="",
+        default="runs/checkpoint/Unet_Train_on_KvasirandDB_429_Best.pt",
         type=str,
         help="model checkpoint path",
     )
@@ -167,6 +173,25 @@ def _load_weights_for_model(model, weights: str, device: torch.device, model_nam
         model.load_state_dict(model_dict, strict=False)
 
 
+def _infer_pidnet_num_classes_from_ckpt(weights: str, device: torch.device):
+    ckpt_path = resolve_path(weights)
+    if not os.path.isfile(ckpt_path):
+        return None
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+    state_dict = normalize_state_dict_keys(get_state_dict_from_checkpoint(checkpoint))
+
+    for key in ("final_layer.conv2.weight", "seghead_p.conv2.weight"):
+        tensor = state_dict.get(key)
+        if torch.is_tensor(tensor) and tensor.ndim >= 1:
+            return int(tensor.shape[0])
+
+    for key in ("final_layer.conv2.bias", "seghead_p.conv2.bias"):
+        tensor = state_dict.get(key)
+        if torch.is_tensor(tensor) and tensor.ndim >= 1:
+            return int(tensor.shape[0])
+    return None
+
+
 def _build_model(args, device):
     if not args.weights:
         raise ValueError("--weights is required for testing.")
@@ -196,8 +221,17 @@ def _build_model(args, device):
 
     if args.model == "pidnet":
         num_classes = int(args.pidnet_num_classes)
-        if num_classes < 2:
-            raise ValueError("--pidnet_num_classes must be >= 2 for binary foreground extraction.")
+        if num_classes < 1:
+            raise ValueError("--pidnet_num_classes must be >= 1.")
+
+        inferred_classes = _infer_pidnet_num_classes_from_ckpt(args.weights, device)
+        if inferred_classes is not None and inferred_classes != num_classes:
+            print(
+                f"[PIDNet] --pidnet_num_classes={num_classes} mismatches checkpoint head channels "
+                f"({inferred_classes}); override to {inferred_classes}."
+            )
+            num_classes = inferred_classes
+
         model = PIDNet(
             m=2,
             n=3,

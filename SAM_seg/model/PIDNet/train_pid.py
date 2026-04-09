@@ -12,6 +12,15 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+SAM_SEG_ROOT = os.path.abspath(os.path.join(THIS_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(SAM_SEG_ROOT, ".."))
+PIDNET_ROOT = THIS_DIR
+if SAM_SEG_ROOT not in sys.path:
+    sys.path.insert(0, SAM_SEG_ROOT)
+if PIDNET_ROOT not in sys.path:
+    sys.path.insert(1, PIDNET_ROOT)
+
 from dataset import CsvPolypDataset, load_pairs_from_root, read_csv_pairs
 from utils import (
     clip_gradient,
@@ -22,13 +31,6 @@ from utils import (
     set_seed,
     setup_logger,
 )
-
-
-THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(THIS_DIR, ".."))
-PIDNET_ROOT = os.path.join(THIS_DIR, "model", "PIDNet")
-if PIDNET_ROOT not in sys.path:
-    sys.path.insert(0, PIDNET_ROOT)
 
 from models.pidnet import PIDNet
 from configs import config as pid_config
@@ -117,7 +119,7 @@ def get_args():
     )
     parser.add_argument(
         "--val_dataset",
-        default="CVC-ColonDB",
+        default="Kvasir",
         type=str,
         choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
         help="subfolder name under --testdataset_root for validation, e.g. CVC-ColonDB/Kvasir/CVC-300",
@@ -127,18 +129,18 @@ def get_args():
     parser.add_argument("--augmentation", default=False, type=str2bool)
 
     parser.add_argument("--epochs", default=80, type=int)
-    parser.add_argument("--batch_size", default=32, type=int)
+    parser.add_argument("--batch_size", default=16, type=int)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--optimizer", default="SGD", choices=["SGD", "AdamW"])
-    parser.add_argument("--lr", default=5e-3, type=float)
+    parser.add_argument("--lr", default=5e-4, type=float)
     parser.add_argument("--poly_power", default=0.9, type=float)
-    parser.add_argument("--weight_decay", default=5e-4, type=float)
+    parser.add_argument("--weight_decay", default=5e-5, type=float)
     parser.add_argument("--momentum", default=0.9, type=float)
-    parser.add_argument("--clip", default=1, type=float, help="gradient clipping value")
+    parser.add_argument("--clip", default=0.5, type=float, help="gradient clipping value")
 
     parser.add_argument("--aux_weight", default=0.4, type=float, help="aux segmentation branch weight")
     parser.add_argument("--main_weight", default=1.0, type=float, help="main segmentation branch weight")
-    parser.add_argument("--boundary_weight", default=10.0, type=float, help="boundary BCE weight")
+    parser.add_argument("--boundary_weight", default=20.0, type=float, help="boundary BCE weight")
     parser.add_argument("--sb_weight", default=1.0, type=float, help="semantic-on-boundary weight in FullModel")
     parser.add_argument("--use_ohem", default=True, type=str2bool)
     parser.add_argument("--ohem_thresh", default=0.9, type=float)
@@ -146,10 +148,11 @@ def get_args():
     parser.add_argument("--ignore_label", default=255, type=int)
 
     parser.add_argument("--pid_pretrained", 
-                        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pids/2026-0326-1155_public_CVC-ColonDB/checkpoint/best_pidnet_s6769.pth", 
+                        default='runs/seg_pids/2026-0409-2033_public_Kvasir/checkpoint/best_pidnet_s.pth',
+                        # default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pids/2026-0326-1155_public_CVC-ColonDB/checkpoint/best_pidnet_s6769.pth", 
                         type=str, help="optional PIDNet checkpoint for init")
     parser.add_argument("--resume", default="", type=str, help="optional checkpoint to resume")
-    parser.add_argument("--save_epochs", default=15, type=int)
+    parser.add_argument("--save_epochs", default=30, type=int)
     parser.add_argument("--work_dir", default="runs/seg_pids", type=str)
     return parser.parse_args()
 
@@ -281,7 +284,7 @@ class Optimizer:
 
         self.start_epoch = 0
         ##########################
-        self.best_dice = 0.67
+        self.best_dice = 0.3
         if args.resume:
             self._resume(args.resume)
 

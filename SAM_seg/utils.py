@@ -141,7 +141,10 @@ def load_model_weights_flexible(model: torch.nn.Module, ckpt_path: str, device: 
     try:
         return load_model_weights(model, ckpt_path, device, strict=True, match_shape=False)
     except RuntimeError:
-        return load_model_weights(model, ckpt_path, device, strict=False, match_shape=False)
+        try:
+            return load_model_weights(model, ckpt_path, device, strict=False, match_shape=False)
+        except RuntimeError:
+            return load_model_weights(model, ckpt_path, device, strict=False, match_shape=True)
 
 
 def decode_pidnet_outputs(outputs):
