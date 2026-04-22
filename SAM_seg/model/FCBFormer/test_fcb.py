@@ -1,8 +1,10 @@
 import argparse
+import glob
 import os
 import shutil
 import sys
 import tempfile
+import zipfile
 
 import numpy as np
 import torch
@@ -36,7 +38,7 @@ def get_args():
     )
     parser.add_argument(
         "--val_dataset",
-        default="ETIS-LaribPolypDB",
+        default="Kvasir",
         type=str,
         choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
         help="subfolder under --testdataset_root; use 'all' for all subsets",
@@ -50,7 +52,7 @@ def get_args():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--weights", 
-        default="runs/seg_fcb/2026-0408-2304_public_CVC-ColonDB_fcb/checkpoint/best_fcb.pth", 
+        default="runs/checkpoint/FCB_Train_on_KvasirandDB30_Best.pt", 
         type=str, help="FCBFormer checkpoint path")
     parser.add_argument(
         "--pvt_b3_weights",
@@ -174,7 +176,36 @@ def _load_weights_for_model(model, weights: str, device: torch.device):
     ckpt_path = resolve_path(weights)
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"--weights not found: {ckpt_path}")
-    info = load_model_weights_flexible(model, ckpt_path, device)
+
+    # Optional pre-check for zip-based torch checkpoints to provide clearer diagnostics.
+    zip_status = "unknown"
+    try:
+        with zipfile.ZipFile(ckpt_path, "r") as zf:
+            bad_entry = zf.testzip()
+            zip_status = "ok" if bad_entry is None else f"corrupted entry: {bad_entry}"
+    except zipfile.BadZipFile:
+        zip_status = "not-zip (may still be a valid legacy torch checkpoint)"
+    except Exception as e:
+        zip_status = f"zip-check skipped ({e})"
+
+    try:
+        info = load_model_weights_flexible(model, ckpt_path, device)
+    except Exception as e:
+        size_mb = os.path.getsize(ckpt_path) / (1024.0 * 1024.0)
+        candidates = sorted(
+            glob.glob(os.path.join(PROJECT_ROOT, "runs", "seg_fcb", "*", "checkpoint", "*.pth"))
+        )
+        candidate_text = "\n".join([f"  - {p}" for p in candidates[-8:]]) if candidates else "  (none found)"
+        raise RuntimeError(
+            "Failed to load FCBFormer checkpoint.\n"
+            f"  path: {ckpt_path}\n"
+            f"  size: {size_mb:.2f} MB\n"
+            f"  zip integrity: {zip_status}\n"
+            "Possible reasons: file is corrupted/incomplete or checkpoint format mismatches current model.\n"
+            "Try a known-good checkpoint from runs/seg_fcb/*/checkpoint/*.pth, for example:\n"
+            f"{candidate_text}\n"
+            f"Original error: {e}"
+        ) from e
     return ckpt_path, info
 
 

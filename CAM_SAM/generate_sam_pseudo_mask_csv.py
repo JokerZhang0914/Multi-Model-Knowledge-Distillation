@@ -16,7 +16,7 @@ from utils import (
     bbox2sam_mask,
     build_cls_transform,
     cam2mask,
-    ensure_box_1d,
+    ensure_boxes_2d,
     load_checkpoint,
     mask2bbox,
     safe_open_rgb,
@@ -61,7 +61,7 @@ def get_args():
 
     parser.add_argument("--bbox_min_area", default=50, type=int)
     parser.add_argument("--bbox_enlarge", default=0.1, type=float)
-    parser.add_argument("--bbox_mode", default="largest", choices=["largest", "union", "all"])
+    parser.add_argument("--bbox_mode", default="all", choices=["largest", "union", "all"])
     parser.add_argument("--bbox_pre_dilate", default=0, type=int)
     parser.add_argument("--bbox_min_size", default=2, type=int)
     return parser.parse_args()
@@ -106,16 +106,20 @@ def scale_box_xyxy(
 ) -> np.ndarray:
     sx = float(dst_w) / float(max(1, src_w))
     sy = float(dst_h) / float(max(1, src_h))
-    x0, y0, x1, y1 = box_xyxy.astype(np.float32).tolist()
-    x0 *= sx
-    x1 *= sx
-    y0 *= sy
-    y1 *= sy
-    x0 = float(np.clip(x0, 0, max(0, dst_w - 1)))
-    y0 = float(np.clip(y0, 0, max(0, dst_h - 1)))
-    x1 = float(np.clip(x1, 0, dst_w))
-    y1 = float(np.clip(y1, 0, dst_h))
-    return np.array([x0, y0, x1, y1], dtype=np.float32)
+    boxes = ensure_boxes_2d(box_xyxy)
+    if boxes.shape[0] == 0:
+        return boxes
+
+    out = boxes.copy()
+    out[:, 0] *= sx
+    out[:, 2] *= sx
+    out[:, 1] *= sy
+    out[:, 3] *= sy
+    out[:, 0] = np.clip(out[:, 0], 0, max(0, dst_w - 1))
+    out[:, 1] = np.clip(out[:, 1], 0, max(0, dst_h - 1))
+    out[:, 2] = np.clip(out[:, 2], 0, dst_w)
+    out[:, 3] = np.clip(out[:, 3], 0, dst_h)
+    return out.astype(np.float32)
 
 
 def save_binary_mask(mask: np.ndarray, out_path: str) -> None:
@@ -248,8 +252,8 @@ def main():
                 pre_dilate=args.bbox_pre_dilate,
                 min_box_size=args.bbox_min_size,
             )
-            box = ensure_box_1d(box)
-            if box is None:
+            box = ensure_boxes_2d(box)
+            if box.shape[0] == 0:
                 skipped_no_box += 1
                 continue
 
@@ -260,8 +264,8 @@ def main():
                 dst_w=orig_w,
                 dst_h=orig_h,
             )
-            box_orig = ensure_box_1d(box_orig)
-            if box_orig is None:
+            box_orig = ensure_boxes_2d(box_orig)
+            if box_orig.shape[0] == 0:
                 skipped_no_box += 1
                 continue
 
@@ -290,7 +294,9 @@ def main():
                     "source_root": root_dir,
                     "pred_class": pred_cls,
                     "pred_positive_prob": f"{pos_prob:.6f}",
-                    "box_xyxy": " ".join([str(int(round(v))) for v in box_orig.tolist()]),
+                    "box_xyxy": ";".join(
+                        [" ".join([str(int(round(v))) for v in b.tolist()]) for b in box_orig]
+                    ),
                 }
             )
             saved_count += 1

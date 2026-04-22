@@ -72,7 +72,7 @@ def get_args():
     parser.add_argument("--train_source", default="csv", choices=["csv", "public"], type=str)
     parser.add_argument(
         "--csv_path",
-        default="data/sam_pseudo_mask_pairs.csv",
+        default="data/seg1_pseudo_mask_pairs.csv",
         type=str,
         help="used when --train_source csv",
     )
@@ -90,7 +90,7 @@ def get_args():
     )
     parser.add_argument(
         "--val_dataset",
-        default="CVC-ColonDB",
+        default="ETIS-LaribPolypDB",
         type=str,
         choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
         help="subfolder under --testdataset_root, e.g. CVC-ColonDB/Kvasir/CVC-300; use 'all' for all subsets",
@@ -99,20 +99,20 @@ def get_args():
     parser.add_argument("--trainsize", default=352, type=int)
     parser.add_argument("--augmentation", default=False, type=str2bool)
 
-    parser.add_argument("--epochs", default=10, type=int)
-    parser.add_argument("--batch_size", default=16, type=int)
+    parser.add_argument("--epochs", default=30, type=int)
+    parser.add_argument("--batch_size", default=64, type=int)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--optimizer", default="AdamW", choices=["AdamW", "SGD"])
-    parser.add_argument("--lr", default=5e-4, type=float)
+    parser.add_argument("--lr", default=1e-4, type=float)
     parser.add_argument("--weight_decay", default=1e-4, type=float)
     parser.add_argument("--momentum", default=0.9, type=float)
-    parser.add_argument("--clip", default=1.0, type=float, help="gradient clipping value")
+    parser.add_argument("--clip", default=0.5, type=float, help="gradient clipping value")
     parser.add_argument("--decay_rate", default=0.1, type=float)
     parser.add_argument("--decay_epoch", default=5, type=int)
-    parser.add_argument("--save_epochs", default=15, type=int)
+    parser.add_argument("--save_epochs", default=10, type=int)
     parser.add_argument(
         "--pvt_pretrained",
-        default="/mnt/nas1/disk03/zhaokaizhang/code/Multi-Model-Knowledge-Distillation/runs/seg_pvt/2026-0326-1823_public_CVC-ColonDB/checkpoint/best_pvt.pth",
+        default="runs/checkpoint/24PolypPVT-best.pth",
         type=str,
         help="optional path to pth",
     )

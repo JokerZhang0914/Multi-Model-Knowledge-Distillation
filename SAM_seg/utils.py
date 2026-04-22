@@ -6,7 +6,10 @@ from typing import Dict
 import numpy as np
 import torch
 import torch.nn.functional as F
-from scipy.ndimage import binary_erosion, distance_transform_edt, generate_binary_structure
+try:
+    from medpy.metric import binary as medpy_binary
+except ImportError:
+    medpy_binary = None
 
 
 def set_seed(seed: int):
@@ -176,47 +179,34 @@ def _to_bool_mask(mask, threshold=0.5):
     return arr > threshold
 
 
+def _require_medpy_binary():
+    if medpy_binary is None:
+        raise ImportError("medpy is required for metric computation. Please install it with `pip install medpy`.")
+    return medpy_binary
+
+
 def dice_coefficient(pred_mask, gt_mask, eps=1e-6):
+    del eps  # kept for backward-compatible signature
     pred = _to_bool_mask(pred_mask)
     gt = _to_bool_mask(gt_mask)
-    inter = np.logical_and(pred, gt).sum()
-    return float((2.0 * inter + eps) / (pred.sum() + gt.sum() + eps))
+    metric = _require_medpy_binary()
+    return float(metric.dc(pred, gt))
 
 
 def precision_score(pred_mask, gt_mask, eps=1e-6):
+    del eps  # kept for backward-compatible signature
     pred = _to_bool_mask(pred_mask)
     gt = _to_bool_mask(gt_mask)
-    tp = np.logical_and(pred, gt).sum()
-    fp = np.logical_and(pred, np.logical_not(gt)).sum()
-    return float((tp + eps) / (tp + fp + eps))
+    metric = _require_medpy_binary()
+    return float(metric.precision(pred, gt))
 
 
 def recall_score(pred_mask, gt_mask, eps=1e-6):
+    del eps  # kept for backward-compatible signature
     pred = _to_bool_mask(pred_mask)
     gt = _to_bool_mask(gt_mask)
-    tp = np.logical_and(pred, gt).sum()
-    fn = np.logical_and(np.logical_not(pred), gt).sum()
-    return float((tp + eps) / (tp + fn + eps))
-
-
-def _surface_distances(src_mask, ref_mask, spacing=None):
-    src = _to_bool_mask(src_mask)
-    ref = _to_bool_mask(ref_mask)
-    if src.shape != ref.shape:
-        raise ValueError(f"Mask shape mismatch: {src.shape} vs {ref.shape}")
-
-    if src.sum() == 0 or ref.sum() == 0:
-        return np.array([], dtype=np.float64)
-
-    footprint = generate_binary_structure(src.ndim, 1)
-    src_border = np.logical_xor(src, binary_erosion(src, structure=footprint, border_value=0))
-    ref_border = np.logical_xor(ref, binary_erosion(ref, structure=footprint, border_value=0))
-
-    if not np.any(src_border) or not np.any(ref_border):
-        return np.array([], dtype=np.float64)
-
-    dt = distance_transform_edt(~ref_border, sampling=spacing)
-    return dt[src_border]
+    metric = _require_medpy_binary()
+    return float(metric.recall(pred, gt))
 
 
 def hausdorff_distance(pred_mask, gt_mask, spacing=None):
@@ -226,12 +216,11 @@ def hausdorff_distance(pred_mask, gt_mask, spacing=None):
         return 0.0
     if pred.sum() == 0 or gt.sum() == 0:
         return float("inf")
-
-    d1 = _surface_distances(pred, gt, spacing=spacing)
-    d2 = _surface_distances(gt, pred, spacing=spacing)
-    if d1.size == 0 or d2.size == 0:
+    metric = _require_medpy_binary()
+    try:
+        return float(metric.hd(pred, gt, voxelspacing=spacing, connectivity=1))
+    except Exception:
         return float("inf")
-    return float(max(d1.max(), d2.max()))
 
 
 def hausdorff_distance_95(pred_mask, gt_mask, spacing=None):
@@ -241,13 +230,11 @@ def hausdorff_distance_95(pred_mask, gt_mask, spacing=None):
         return 0.0
     if pred.sum() == 0 or gt.sum() == 0:
         return float("inf")
-
-    d1 = _surface_distances(pred, gt, spacing=spacing)
-    d2 = _surface_distances(gt, pred, spacing=spacing)
-    all_d = np.concatenate([d1, d2], axis=0) if d1.size and d2.size else np.array([], dtype=np.float64)
-    if all_d.size == 0:
+    metric = _require_medpy_binary()
+    try:
+        return float(metric.hd95(pred, gt, voxelspacing=spacing, connectivity=1))
+    except Exception:
         return float("inf")
-    return float(np.percentile(all_d, 95))
 
 
 def evaluate_binary_metrics(pred_mask, gt_mask, spacing=None):

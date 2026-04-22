@@ -18,7 +18,7 @@ from utils import (
     cam_to_heatmap,
     dice_score,
     draw_box,
-    ensure_box_1d,
+    ensure_boxes_2d,
     load_checkpoint,
     load_image_pair,
     mask2bbox,
@@ -63,7 +63,7 @@ def get_args():
 
     parser.add_argument("--bbox_min_area", default=50, type=int)
     parser.add_argument("--bbox_enlarge", default=0.05, type=float)
-    parser.add_argument("--bbox_mode", default="largest", choices=["largest", "union", "all"])
+    parser.add_argument("--bbox_mode", default="all", choices=["largest", "union", "all"])
     parser.add_argument("--bbox_pre_dilate", default=0, type=int)
     parser.add_argument("--bbox_min_size", default=2, type=int)
     return parser.parse_args()
@@ -165,7 +165,7 @@ def main():
             test=False,
         ).astype(np.uint8)
 
-        box = mask2bbox(
+        boxes = mask2bbox(
             cam_mask,
             min_area=args.bbox_min_area,
             box_enlarge=args.bbox_enlarge,
@@ -174,10 +174,11 @@ def main():
             pre_dilate=args.bbox_pre_dilate,
             min_box_size=args.bbox_min_size,
         )
-        box = ensure_box_1d(box)
+        boxes = ensure_boxes_2d(boxes)
 
-        if box is None:
+        if boxes.shape[0] == 0:
             no_box_count += 1
+            boxes = None
             sam_mask = np.zeros_like(cam_mask, dtype=np.uint8)
             medsam_mask = np.zeros_like(cam_mask, dtype=np.uint8)
             sammed2d_mask = np.zeros_like(cam_mask, dtype=np.uint8)
@@ -185,21 +186,21 @@ def main():
             sam_mask = bbox2sam_mask(
                 sam_predictor,
                 img_rgb,
-                box,
+                boxes,
                 type="sam",
                 multimask_output=True,
             )
             medsam_mask = bbox2sam_mask(
                 medsam_predictor,
                 img_rgb,
-                box,
+                boxes,
                 type="medsam",
                 multimask_output=False,
             )
             sammed2d_mask = bbox2sam_mask(
                 sammed2d_predictor,
                 img_rgb,
-                box,
+                boxes,
                 type="sammed2d",
                 multimask_output=True,
             )
@@ -218,15 +219,16 @@ def main():
             f"[{idx}/{len(img_paths)}] id={img_id} pred={pred_cls} "
             f"p1={probs[0, 1].item():.4f} dice_cam={d_cam:.4f} "
             f"dice_sam={d_sam:.4f} dice_medsam={d_medsam:.4f} dice_sammed2d={d_sammed2d:.4f} "
-            f"box={'None' if box is None else [int(v) for v in box.tolist()]}"
+            f"box={'None' if boxes is None else [[int(v) for v in b.tolist()] for b in boxes]}"
         )
 
         if args.save_vis:
             gt_overlay = mask_overlay(img_rgb, gt_mask, color=(255, 0, 0), alpha=0.4)
             cam_overlay = blend_overlay(img_rgb, cam_to_heatmap(cam), alpha=0.5)
             cam_box_overlay = mask_overlay(img_rgb, cam_mask, color=(0, 255, 0), alpha=0.4)
-            if box is not None:
-                cam_box_overlay = draw_box(cam_box_overlay, box, color=(0, 0, 255), width=2)
+            if boxes is not None:
+                for box_i in boxes:
+                    cam_box_overlay = draw_box(cam_box_overlay, box_i, color=(0, 0, 255), width=2)
             sam_overlay = mask_overlay(img_rgb, sam_mask, color=(255, 255, 0), alpha=0.4)
             medsam_overlay = mask_overlay(img_rgb, medsam_mask, color=(0, 255, 255), alpha=0.4)
             sammed2d_overlay = mask_overlay(img_rgb, sammed2d_mask, color=(255, 128, 0), alpha=0.4)

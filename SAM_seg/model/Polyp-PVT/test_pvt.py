@@ -35,7 +35,7 @@ def get_args():
     )
     parser.add_argument(
         "--val_dataset",
-        default="Kvasir",
+        default="ETIS-LaribPolypDB",
         type=str,
         choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
         help="subfolder under --testdataset_root; use 'all' for all subsets",
@@ -49,7 +49,8 @@ def get_args():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--weights",
-        default="runs/seg_pvt/2026-0409-1220_public_CVC-ColonDB_pvt/checkpoint/best_pvt.pth",
+        default="runs/checkpoint/24PolypPVT-best.pth",
+        # default="runs/seg_pvt/2026-0415-1404_csv_all/checkpoint/best_pvt.pth",
         type=str,
         help="Polyp-PVT checkpoint path",
     )

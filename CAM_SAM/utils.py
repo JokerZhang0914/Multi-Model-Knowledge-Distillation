@@ -6,8 +6,15 @@ import torch.nn as nn
 from PIL import Image, ImageDraw, ImageFont
 import imageio.v2 as imageio
 from torchvision import transforms
-import cv2  
-from scipy import ndimage as ndi  
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    from scipy import ndimage as ndi
+except ImportError:
+    ndi = None
 
 
 # =========================
@@ -167,6 +174,14 @@ def cam2mask(cam, low_thresh=0.5, high_thresh=0.7, min_area=300, smooth_sigma=1.
     if cam.max() > 1.0:
         cam = cam / 255.0
     cam = np.clip(cam, 0.0, 1.0)
+    low_thresh = float(low_thresh)
+    high_thresh = float(high_thresh)
+    if not np.isfinite(low_thresh) or not np.isfinite(high_thresh):
+        raise ValueError("low_thresh/high_thresh must be finite numbers.")
+    if low_thresh < 0.0 or low_thresh > 1.0 or high_thresh < 0.0 or high_thresh > 1.0:
+        raise ValueError("low_thresh/high_thresh must be in [0, 1].")
+    if low_thresh > high_thresh:
+        raise ValueError(f"low_thresh ({low_thresh}) must be <= high_thresh ({high_thresh}).")
 
     # 平滑抑制零星噪点
     if smooth_sigma and smooth_sigma > 0:
@@ -184,14 +199,22 @@ def cam2mask(cam, low_thresh=0.5, high_thresh=0.7, min_area=300, smooth_sigma=1.
         labeled, num = ndi.label(low_mask)
         if num > 0:
             high_labels = np.unique(labeled[high_mask])
-            keep = np.isin(labeled, high_labels)
+            high_labels = high_labels[high_labels != 0]
+            if high_labels.size > 0:
+                keep = np.isin(labeled, high_labels)
+            else:
+                keep = np.zeros_like(low_mask, dtype=bool)
         else:
             keep = low_mask
     elif cv2 is not None:
         num, labeled = cv2.connectedComponents(low_mask.astype(np.uint8))
         if num > 1:
             high_labels = np.unique(labeled[high_mask.astype(bool)])
-            keep = np.isin(labeled, high_labels)
+            high_labels = high_labels[high_labels != 0]
+            if high_labels.size > 0:
+                keep = np.isin(labeled, high_labels)
+            else:
+                keep = np.zeros_like(low_mask, dtype=bool)
         else:
             keep = low_mask
     else:
@@ -296,19 +319,33 @@ def cam2mask(cam, low_thresh=0.5, high_thresh=0.7, min_area=300, smooth_sigma=1.
 # =========================
 # BBox / SAM
 # =========================
+def ensure_boxes_2d(box):
+    if box is None:
+        return np.zeros((0, 4), dtype=np.float32)
+    arr = np.asarray(box, dtype=np.float32)
+    if arr.size < 4:
+        return np.zeros((0, 4), dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim != 2 or arr.shape[1] < 4:
+        return np.zeros((0, 4), dtype=np.float32)
+    arr = arr[:, :4]
+    finite = np.isfinite(arr).all(axis=1)
+    arr = arr[finite]
+    if arr.size == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    valid = (arr[:, 2] > arr[:, 0]) & (arr[:, 3] > arr[:, 1])
+    arr = arr[valid]
+    if arr.size == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    return arr.astype(np.float32)
+
+
 def ensure_box_1d(box):
-    box = np.asarray(box)
-    if box.size < 4:
+    boxes = ensure_boxes_2d(box)
+    if boxes.shape[0] == 0:
         return None
-    if box.ndim == 2:
-        box = box[0]
-    box = box.astype(np.float32).reshape(-1)
-    if box.shape[0] < 4:
-        return None
-    x0, y0, x1, y1 = box[:4]
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return np.array([x0, y0, x1, y1], dtype=np.float32)
+    return boxes[0].astype(np.float32)
 
 
 def mask2bbox(
@@ -460,11 +497,11 @@ def bbox2sam_mask(
     输入:
       predictor: segment_anything.SamPredictor
       image: HxWxC, uint8/rgb
-      box: [x0, y0, x1, y1] 或 (N,4) (会取第一个)
+      box: [x0, y0, x1, y1] 或 (N,4)。当为多框时会逐框推理并进行并集合并
       type: "sam" / "medsam" / "sammed2d"
     返回:
       mask: uint8, HxW, {0,1}
-      可选返回 best_score
+      可选返回 best_score (多框时返回各框候选中的最大 score)
     """
     prompt_type = str(type).lower()
     if prompt_type not in ("sam", "medsam", "sammed2d"):
@@ -486,48 +523,62 @@ def bbox2sam_mask(
     if predictor is None or box is None:
         return (empty, 0.0) if return_score else empty
 
-    box = np.asarray(box)
-    if box.size < 4:
-        return (empty, 0.0) if return_score else empty
-    if box.ndim == 2:
-        box = box[0]
-    box = box.astype(np.float32).reshape(-1)
-    if box.shape[0] < 4:
+    boxes = ensure_boxes_2d(box)
+    if boxes.shape[0] == 0:
         return (empty, 0.0) if return_score else empty
 
-    x0, y0, x1, y1 = box[:4]
-    x0 = float(np.clip(x0, 0, max(0, w - 1)))
-    y0 = float(np.clip(y0, 0, max(0, h - 1)))
-    x1 = float(np.clip(x1, 0, w))
-    y1 = float(np.clip(y1, 0, h))
-    if x1 <= x0 or y1 <= y0:
+    clipped_boxes = []
+    for box_i in boxes:
+        x0, y0, x1, y1 = box_i.tolist()
+        x0 = float(np.clip(x0, 0, max(0, w - 1)))
+        y0 = float(np.clip(y0, 0, max(0, h - 1)))
+        x1 = float(np.clip(x1, 0, w))
+        y1 = float(np.clip(y1, 0, h))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        clipped_boxes.append([x0, y0, x1, y1])
+    if len(clipped_boxes) == 0:
         return (empty, 0.0) if return_score else empty
-    box_xyxy = np.array([x0, y0, x1, y1], dtype=np.float32)
 
     predictor.set_image(img)
-    masks, scores, _ = predictor.predict(
-        point_coords=None,
-        point_labels=None,
-        box=box_xyxy,
-        multimask_output=bool(multimask_output),
-        return_logits=False,
-    )
+    merged_mask = np.zeros((h, w), dtype=np.uint8)
+    best_score = 0.0
 
-    if masks is None:
-        return (empty, 0.0) if return_score else empty
+    for box_xyxy in clipped_boxes:
+        masks, scores, _ = predictor.predict(
+            point_coords=None,
+            point_labels=None,
+            box=np.asarray(box_xyxy, dtype=np.float32),
+            multimask_output=bool(multimask_output),
+            return_logits=False,
+        )
 
-    masks = np.asarray(masks)
-    if masks.ndim == 2:
-        best_mask = masks
-        best_score = float(scores[0]) if scores is not None and len(scores) > 0 else 0.0
-    elif masks.ndim == 3 and masks.shape[0] > 0:
-        best_idx = int(np.argmax(scores)) if scores is not None and len(scores) > 0 else 0
-        best_mask = masks[best_idx]
-        best_score = float(scores[best_idx]) if scores is not None and len(scores) > 0 else 0.0
-    else:
-        return (empty, 0.0) if return_score else empty
+        if masks is None:
+            continue
 
-    best_mask = (best_mask > 0).astype(np.uint8)
+        masks = np.asarray(masks)
+        scores_arr = np.asarray(scores, dtype=np.float32).reshape(-1) if scores is not None else np.array([], dtype=np.float32)
+
+        if masks.ndim == 2:
+            best_mask_i = masks
+            score_i = float(scores_arr[0]) if scores_arr.size > 0 else 0.0
+        elif masks.ndim == 3 and masks.shape[0] > 0:
+            if scores_arr.size > 0:
+                valid_scores = scores_arr[: masks.shape[0]]
+                best_idx = int(np.argmax(valid_scores))
+                score_i = float(valid_scores[best_idx])
+            else:
+                best_idx = 0
+                score_i = 0.0
+            best_mask_i = masks[best_idx]
+        else:
+            continue
+
+        best_mask_i = (best_mask_i > 0).astype(np.uint8)
+        merged_mask = np.logical_or(merged_mask > 0, best_mask_i > 0).astype(np.uint8)
+        if score_i > best_score:
+            best_score = score_i
+
     if return_score:
-        return best_mask, best_score
-    return best_mask
+        return merged_mask, float(best_score)
+    return merged_mask

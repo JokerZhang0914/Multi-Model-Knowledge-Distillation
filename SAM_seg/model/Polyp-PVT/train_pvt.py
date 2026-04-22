@@ -110,7 +110,7 @@ def get_args():
     )
     parser.add_argument(
         "--val_dataset",
-        default="CVC-ColonDB",
+        default="all",
         type=str,
         choices=["CVC-ColonDB", "CVC-300", "CVC-ClinicDB", "ETIS-LaribPolypDB", "Kvasir", "all"],
         help="subfolder under --testdataset_root; use 'all' for all subsets",
@@ -138,7 +138,11 @@ def get_args():
         type=str,
         help="optional pvt_v2_b2 backbone pretrained path for PolypPVT(pretrained_path=...)",
     )
-    parser.add_argument("--pvt_pretrained", default="", type=str, help="optional full Polyp-PVT checkpoint for init")
+    parser.add_argument(
+        "--pvt_pretrained", 
+        default="", 
+        type=str, 
+        help="optional full Polyp-PVT checkpoint for init")
     parser.add_argument("--resume", default="", type=str, help="optional training checkpoint to resume")
     parser.add_argument("--work_dir", default="runs/seg_pvt", type=str)
     return parser.parse_args()

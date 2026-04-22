@@ -49,7 +49,7 @@ def get_args():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--weights",
-        default="runs/seg_unet/2026-0327-1228_public_CVC-ColonDB_unet/checkpoint/best_unet6269.pth",
+        default="runs/seg_unet/2026-0326-2156_public_CVC-ColonDB_unet/checkpoint/best_unet5093.pth",
         type=str,
         help="UNet checkpoint path",
     )

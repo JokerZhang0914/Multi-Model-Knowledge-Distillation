@@ -56,7 +56,7 @@ def get_args():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--weights", 
-        default="runs/seg_pids/2026-0325-2037_CVC-ColonDB/checkpoint/best_pidnet_s5109.pth", 
+        default="runs/seg_pids/2026-0326-1224_public_CVC-ColonDB/checkpoint/best_pidnet_s6943.pth", 
         type=str, help="PIDNet checkpoint path")
     parser.add_argument("--pidnet_num_classes", default=2, type=int, help="fallback class count when ckpt inference fails")
     return parser.parse_args()
